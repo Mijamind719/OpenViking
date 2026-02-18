@@ -117,3 +117,46 @@ async def test_glob(client_with_resource):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+
+
+async def test_ast_grep(client, service):
+    async def fake_ast_grep(**kwargs):
+        return {
+            "matches": [
+                {
+                    "uri": "viking://resources/sample.md",
+                    "language": "markdown",
+                    "start_line": 1,
+                    "start_col": 1,
+                    "end_line": 1,
+                    "end_col": 8,
+                    "content": "# Sample",
+                }
+            ],
+            "count": 1,
+            "scanned_files": 1,
+            "skipped_files": 0,
+            "truncated": False,
+        }
+
+    service.fs.ast_grep = fake_ast_grep
+
+    resp = await client.post(
+        "/api/v1/search/ast-grep",
+        json={"uri": "viking://resources/", "pattern": "$X"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["result"]["count"] == 1
+
+
+async def test_ast_grep_invalid_arguments(client):
+    resp = await client.post(
+        "/api/v1/search/ast-grep",
+        json={"uri": "viking://resources/"},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["status"] == "error"
+    assert body["error"]["code"] == "INVALID_ARGUMENT"
