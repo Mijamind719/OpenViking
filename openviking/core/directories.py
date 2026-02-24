@@ -120,11 +120,6 @@ PRESET_DIRECTORIES: Dict[str, DirectoryDefinition] = {
         overview="Globally shared resource storage, organized by project/topic. "
         "No preset subdirectory structure, users create project directories as needed.",
     ),
-    "transactions": DirectoryDefinition(
-        path="",
-        abstract="Transaction scope. Stores transaction records",
-        overview="Per-account transaction storage",
-    ),
 }
 
 
@@ -220,10 +215,12 @@ class DirectoryInitializer:
             logger.debug(f"[VikingFS] Directory {uri} already exists")
 
         # 2. Ensure record exists in vector storage
-        from openviking_cli.utils.config.vectordb_config import COLLECTION_NAME
+        from openviking_cli.utils.config import get_openviking_config
+
+        config = get_openviking_config()
 
         existing = await self.vikingdb.filter(
-            collection=COLLECTION_NAME,
+            collection=config.storage.vectordb.name,
             filter={"op": "must", "field": "uri", "conds": [uri]},
             limit=1,
         )

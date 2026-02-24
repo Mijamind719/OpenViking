@@ -2,11 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pack endpoints for OpenViking HTTP Server."""
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from openviking.server.auth import verify_api_key
+from openviking.server.auth import get_request_context
 from openviking.server.dependencies import get_service
+from openviking.server.identity import RequestContext
 from openviking.server.models import Response
 
 router = APIRouter(prefix="/api/v1/pack", tags=["pack"])
@@ -22,7 +25,8 @@ class ExportRequest(BaseModel):
 class ImportRequest(BaseModel):
     """Request model for import."""
 
-    file_path: str
+    file_path: Optional[str] = None
+    temp_path: Optional[str] = None
     parent: str
     force: bool = False
     vectorize: bool = True
@@ -31,7 +35,7 @@ class ImportRequest(BaseModel):
 @router.post("/export")
 async def export_ovpack(
     request: ExportRequest,
-    _: bool = Depends(verify_api_key),
+    _ctx: RequestContext = Depends(get_request_context),
 ):
     """Export context as .ovpack file."""
     service = get_service()
@@ -42,12 +46,17 @@ async def export_ovpack(
 @router.post("/import")
 async def import_ovpack(
     request: ImportRequest,
-    _: bool = Depends(verify_api_key),
+    _ctx: RequestContext = Depends(get_request_context),
 ):
     """Import .ovpack file."""
     service = get_service()
+
+    file_path = request.file_path
+    if request.temp_path:
+        file_path = request.temp_path
+
     result = await service.pack.import_ovpack(
-        request.file_path,
+        file_path,
         request.parent,
         force=request.force,
         vectorize=request.vectorize,
