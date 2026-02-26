@@ -68,6 +68,7 @@ class AsyncOpenViking:
 
     async def initialize(self) -> None:
         """Initialize OpenViking storage and indexes."""
+        logger.info("qmjdebug")
         await self._client.initialize()
         self._initialized = True
 
