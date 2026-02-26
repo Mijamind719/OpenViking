@@ -100,7 +100,9 @@ Temporary Items
 /data/*
 /demo_data/*
 /benchmark_data/*
-.claude
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 .openviking
 
 # AI Coding
