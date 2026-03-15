@@ -1,5 +1,3 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-
 export type ContextOpenVikingConfig = {
   mode?: "local" | "remote";
   configPath?: string;
@@ -49,4 +47,4 @@ export type SessionSyncResult = {
   importedCount: number;
 };
 
-export type MessageLike = AgentMessage | Record<string, unknown>;
+export type MessageLike = Record<string, unknown>;

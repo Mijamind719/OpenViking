@@ -31,25 +31,34 @@ support:
 ## Manual Dev Install
 
 ```bash
-mkdir -p ~/.openclaw/extensions/context-openviking
-cp examples/openclaw-context-plugin/{index.ts,config.ts,client.ts,process-manager.ts,heuristics.ts,formatters.ts,session-mirror.ts,types.ts,openclaw.plugin.json,package.json,README.md} \
-  ~/.openclaw/extensions/context-openviking/
-cd ~/.openclaw/extensions/context-openviking && npm install
+cd examples/openclaw-context-plugin
+openclaw --dev plugins install .
+openclaw --dev config set plugins.enabled true --json
+openclaw --dev config set plugins.slots.contextEngine context-openviking
+```
 
-openclaw plugins enable context-openviking
-openclaw config set plugins.slots.contextEngine context-openviking
+Optional local checks:
+
+```bash
+npm install
+npm run typecheck
 ```
 
 For remote mode:
 
 ```bash
-openclaw config set plugins.entries.context-openviking.config.mode remote
-openclaw config set plugins.entries.context-openviking.config.baseUrl "http://your-server:1933"
+openclaw --dev config set plugins.entries.context-openviking.config.mode remote
+openclaw --dev config set plugins.entries.context-openviking.config.baseUrl "http://your-server:1933"
 ```
 
 For local mode:
 
 ```bash
-openclaw config set plugins.entries.context-openviking.config.mode local
-openclaw config set plugins.entries.context-openviking.config.configPath "~/.openviking/ov.conf"
+openclaw --dev config set plugins.entries.context-openviking.config.mode local
+openclaw --dev config set plugins.entries.context-openviking.config.configPath "~/.openviking/ov.conf"
 ```
+
+More detailed setup notes:
+
+- English: `INSTALL.md`
+- 中文: `INSTALL-ZH.md`

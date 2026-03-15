@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { Type } from "@sinclair/typebox";
 
 import { OpenVikingClient, clampScore, dedupeByUri, isMemoryUri, localClientCache } from "./client.js";
 import { contextOpenVikingConfigSchema } from "./config.js";
@@ -21,6 +20,7 @@ import {
   resolvePythonCommand,
   waitForHealth,
 } from "./process-manager.js";
+import { Schema } from "./schema.js";
 import {
   readSessionFileMessages,
   saveContextState,
@@ -210,13 +210,13 @@ const contextPlugin = {
         name: "ov_recall",
         label: "OpenViking Recall",
         description: "Search OpenViking session, memory, resource, or skill context.",
-        parameters: Type.Object({
-          query: Type.String({ description: "Search query" }),
-          scopes: Type.Optional(
-            Type.Array(Type.String({ description: "session | memory | resource | skill" })),
+        parameters: Schema.Object({
+          query: Schema.String({ description: "Search query" }),
+          scopes: Schema.Optional(
+            Schema.Array(Schema.String({ description: "session | memory | resource | skill" })),
           ),
-          limit: Type.Optional(Type.Number({ description: "Maximum results per scope" })),
-          targetUri: Type.Optional(Type.String({ description: "Exact target URI override" })),
+          limit: Schema.Optional(Schema.Number({ description: "Maximum results per scope" })),
+          targetUri: Schema.Optional(Schema.String({ description: "Exact target URI override" })),
         }),
         async execute(_toolCallId: string, params: Record<string, unknown>) {
           const query = String(params.query ?? "").trim();
@@ -312,9 +312,9 @@ const contextPlugin = {
         name: "ov_commit_memory",
         label: "OpenViking Commit Memory",
         description: "Store durable memory in OpenViking when the user explicitly asks to remember something.",
-        parameters: Type.Object({
-          content: Type.String({ description: "Memory content to store" }),
-          role: Type.Optional(Type.String({ description: "Session role, defaults to user" })),
+        parameters: Schema.Object({
+          content: Schema.String({ description: "Memory content to store" }),
+          role: Schema.Optional(Schema.String({ description: "Session role, defaults to user" })),
         }),
         async execute(_toolCallId: string, params: Record<string, unknown>) {
           const text = String(params.content ?? "").trim();
@@ -348,9 +348,9 @@ const contextPlugin = {
         name: "ov_forget",
         label: "OpenViking Forget",
         description: "Delete a durable memory by URI or by high-confidence search match.",
-        parameters: Type.Object({
-          uri: Type.Optional(Type.String({ description: "Exact memory URI to delete" })),
-          query: Type.Optional(Type.String({ description: "Search query to locate memory" })),
+        parameters: Schema.Object({
+          uri: Schema.Optional(Schema.String({ description: "Exact memory URI to delete" })),
+          query: Schema.Optional(Schema.String({ description: "Search query to locate memory" })),
         }),
         async execute(_toolCallId: string, params: Record<string, unknown>) {
           const client = await getClient();
@@ -399,8 +399,8 @@ const contextPlugin = {
         name: "ov_expand",
         label: "OpenViking Expand",
         description: "Read an OpenViking URI directly for deeper detail.",
-        parameters: Type.Object({
-          uri: Type.String({ description: "OpenViking URI to read" }),
+        parameters: Schema.Object({
+          uri: Schema.String({ description: "OpenViking URI to read" }),
         }),
         async execute(_toolCallId: string, params: Record<string, unknown>) {
           const uri = String(params.uri ?? "").trim();
@@ -466,7 +466,7 @@ const contextPlugin = {
             sourceMessages: allMessages,
           });
           stateBySessionId.set(params.sessionId, result.state);
-          api.logger.info(
+          api.logger.info?.(
             `context-openviking: synced ${result.importedCount} messages after turn (delta=${sourceMessages.length})`,
           );
         } catch (error) {
@@ -594,7 +594,7 @@ const contextPlugin = {
       start: async () => {
         if (cfg.mode !== "local" || !resolveLocalClient || !rejectLocalClient) {
           await (await getClient()).healthCheck().catch(() => {});
-          api.logger.info(`context-openviking: initialized (${cfg.baseUrl})`);
+          api.logger.info?.(`context-openviking: initialized (${cfg.baseUrl})`);
           return;
         }
 
@@ -657,13 +657,13 @@ const contextPlugin = {
           await waitForHealth(baseUrl, 60000, 500);
           const client = new OpenVikingClient(baseUrl, cfg.apiKey, cfg.agentId, cfg.timeoutMs);
           localClientCache.set(localCacheKey, { client, process: child });
-          resolveLocalClient(client);
+          resolveLocalClient?.(client);
           rejectLocalClient = null;
-          api.logger.info(`context-openviking: local server started (${baseUrl})`);
+          api.logger.info?.(`context-openviking: local server started (${baseUrl})`);
         } catch (error) {
           child.kill("SIGTERM");
           localProcess = null;
-          rejectLocalClient(error);
+          rejectLocalClient?.(error);
           rejectLocalClient = null;
           const extra = stderrChunks.length > 0 ? `\n[openviking stderr]\n${stderrChunks.join("\n")}` : "";
           throw new Error(`context-openviking startup failed: ${String(error)}${extra}`);
@@ -677,7 +677,7 @@ const contextPlugin = {
           localProcess.kill("SIGTERM");
           localClientCache.delete(localCacheKey);
           localProcess = null;
-          api.logger.info("context-openviking: local server stopped");
+          api.logger.info?.("context-openviking: local server stopped");
         }
       },
     });
