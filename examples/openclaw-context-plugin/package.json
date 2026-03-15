@@ -1,0 +1,17 @@
+{
+  "name": "@openclaw/context-openviking",
+  "version": "2026.3.15-0",
+  "description": "OpenClaw OpenViking-backed context engine plugin (install to ~/.openclaw/extensions)",
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5"
+  }
+}

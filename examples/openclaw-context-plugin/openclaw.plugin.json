@@ -1,0 +1,90 @@
+{
+  "id": "context-openviking",
+  "kind": "context-engine",
+  "uiHints": {
+    "mode": {
+      "label": "Mode",
+      "help": "local = plugin starts OpenViking; remote = use an existing OpenViking HTTP server"
+    },
+    "configPath": {
+      "label": "Config path (local)",
+      "placeholder": "~/.openviking/ov.conf",
+      "help": "Path to ov.conf when mode is local"
+    },
+    "port": {
+      "label": "Port (local)",
+      "placeholder": "1933",
+      "help": "Port for local OpenViking server",
+      "advanced": true
+    },
+    "baseUrl": {
+      "label": "OpenViking Base URL (remote)",
+      "placeholder": "http://127.0.0.1:1933",
+      "help": "HTTP URL when mode is remote"
+    },
+    "agentId": {
+      "label": "Agent ID",
+      "placeholder": "default",
+      "help": "Identifies this OpenClaw instance to OpenViking"
+    },
+    "apiKey": {
+      "label": "OpenViking API Key",
+      "sensitive": true,
+      "placeholder": "${OPENVIKING_API_KEY}",
+      "help": "Optional API key for OpenViking server"
+    },
+    "timeoutMs": {
+      "label": "Request Timeout (ms)",
+      "placeholder": "15000",
+      "advanced": true
+    },
+    "freshTailMessages": {
+      "label": "Fresh Tail Messages",
+      "placeholder": "16",
+      "help": "Number of most recent raw messages to keep uncompressed"
+    },
+    "autoRecallEnabled": {
+      "label": "Auto Recall",
+      "help": "Automatically assemble session continuity and durable memory"
+    },
+    "resourceRecallEnabled": {
+      "label": "Resource Recall",
+      "help": "Allow automatic resource and skill retrieval when heuristics indicate it is useful",
+      "advanced": true
+    },
+    "searchEscalationEnabled": {
+      "label": "Search Escalation",
+      "help": "Reserved for future escalation from find() to search()",
+      "advanced": true
+    },
+    "recallLimit": {
+      "label": "Recall Limit",
+      "placeholder": "6",
+      "advanced": true
+    },
+    "recallScoreThreshold": {
+      "label": "Recall Score Threshold",
+      "placeholder": "0.2",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": { "type": "string" },
+      "configPath": { "type": "string" },
+      "port": { "type": "number" },
+      "baseUrl": { "type": "string" },
+      "agentId": { "type": "string" },
+      "apiKey": { "type": "string" },
+      "timeoutMs": { "type": "number" },
+      "freshTailMessages": { "type": "number" },
+      "autoRecallEnabled": { "type": "boolean" },
+      "resourceRecallEnabled": { "type": "boolean" },
+      "searchEscalationEnabled": { "type": "boolean" },
+      "recallLimit": { "type": "number" },
+      "recallScoreThreshold": { "type": "number" }
+    }
+  }
+}
