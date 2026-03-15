@@ -29,6 +29,18 @@ openclaw --dev plugins install .
 The `--dev` profile is recommended for first verification because it isolates
 state under `~/.openclaw-dev`.
 
+Or use the helper script from this directory:
+
+```bash
+./install.sh
+```
+
+On Windows PowerShell:
+
+```powershell
+./install.ps1
+```
+
 Optional local check:
 
 ```bash

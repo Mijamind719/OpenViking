@@ -27,6 +27,18 @@ openclaw --dev plugins install .
 
 首次验证建议使用 `--dev`，这样会把状态隔离在 `~/.openclaw-dev` 下，不影响你当前主环境。
 
+也可以直接用当前目录的安装脚本：
+
+```bash
+./install.sh
+```
+
+Windows PowerShell：
+
+```powershell
+./install.ps1
+```
+
 可选的本地静态检查：
 
 ```bash

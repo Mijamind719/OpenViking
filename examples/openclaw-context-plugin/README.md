@@ -44,6 +44,16 @@ npm install
 npm run typecheck
 ```
 
+Quick install helpers:
+
+```bash
+./install.sh
+```
+
+```powershell
+./install.ps1
+```
+
 For remote mode:
 
 ```bash

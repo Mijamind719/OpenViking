@@ -243,9 +243,12 @@ export class OpenVikingClient {
     });
   }
 
-  async getSessionHistoryUri(sessionId: string): Promise<string> {
+  async getSessionHistoryUris(sessionId: string): Promise<string[]> {
     const identity = await this.getRuntimeIdentity();
-    return `viking://session/${identity.userId}/${sessionId}/history`;
+    return [
+      `viking://session/${identity.userId}/${sessionId}/history`,
+      `viking://session/${sessionId}/history`,
+    ];
   }
 }
 
