@@ -42,7 +42,7 @@ const HOME = process.env.HOME || process.env.USERPROFILE || "";
 
 const DEFAULT_OPENCLAW_DIR = join(HOME, ".openclaw");
 let OPENCLAW_DIR = DEFAULT_OPENCLAW_DIR;
-let PLUGIN_DEST = join(OPENCLAW_DIR, "extensions", "memory-openviking");
+let PLUGIN_DEST = join(OPENCLAW_DIR, "extensions", "openclaw-context-plugin");
 
 const OPENVIKING_DIR = join(HOME, ".openviking");
 
@@ -52,19 +52,20 @@ const DEFAULT_VLM_MODEL = "doubao-seed-2-0-pro-260215";
 const DEFAULT_EMBED_MODEL = "doubao-embedding-vision-251215";
 
 const REQUIRED_PLUGIN_FILES = [
-  "examples/openclaw-memory-plugin/index.ts",
-  "examples/openclaw-memory-plugin/config.ts",
-  "examples/openclaw-memory-plugin/openclaw.plugin.json",
-  "examples/openclaw-memory-plugin/package.json",
-  "examples/openclaw-memory-plugin/package-lock.json",
-  "examples/openclaw-memory-plugin/.gitignore",
+  "examples/openclaw-context-plugin/index.ts",
+  "examples/openclaw-context-plugin/context-engine.ts",
+  "examples/openclaw-context-plugin/config.ts",
+  "examples/openclaw-context-plugin/openclaw.plugin.json",
+  "examples/openclaw-context-plugin/package.json",
+  "examples/openclaw-context-plugin/package-lock.json",
+  "examples/openclaw-context-plugin/.gitignore",
 ];
 
 const OPTIONAL_PLUGIN_FILES = [
-  "examples/openclaw-memory-plugin/client.ts",
-  "examples/openclaw-memory-plugin/process-manager.ts",
-  "examples/openclaw-memory-plugin/memory-ranking.ts",
-  "examples/openclaw-memory-plugin/text-utils.ts",
+  "examples/openclaw-context-plugin/client.ts",
+  "examples/openclaw-context-plugin/process-manager.ts",
+  "examples/openclaw-context-plugin/memory-ranking.ts",
+  "examples/openclaw-context-plugin/text-utils.ts",
 ];
 
 let installYes = process.env.OPENVIKING_INSTALL_YES === "1";
@@ -120,7 +121,7 @@ const OPENVIKING_PIP_SPEC = openvikingVersion ? `openviking==${openvikingVersion
 
 function setOpenClawDir(dir) {
   OPENCLAW_DIR = dir;
-  PLUGIN_DEST = join(OPENCLAW_DIR, "extensions", "memory-openviking");
+  PLUGIN_DEST = join(OPENCLAW_DIR, "extensions", "openclaw-context-plugin");
 }
 
 function printHelp() {
@@ -627,7 +628,7 @@ async function downloadPlugin() {
     ...OPTIONAL_PLUGIN_FILES.map((relPath) => ({ relPath, required: false })),
   ];
 
-  info(tr(`Downloading memory-openviking plugin from ${REPO}@${BRANCH}...`, `正在从 ${REPO}@${BRANCH} 下载 memory-openviking 插件...`));
+  info(tr(`Downloading openclaw-context-plugin plugin from ${REPO}@${BRANCH}...`, `正在从 ${REPO}@${BRANCH} 下载 openclaw-context-plugin 插件...`));
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     await downloadPluginFile(file.relPath, file.required, i + 1, files.length);
@@ -649,8 +650,9 @@ async function configureOpenClawPlugin(pluginPath = PLUGIN_DEST) {
   const oc = (args) => runCapture("openclaw", args, { env: ocEnv, shell: IS_WIN });
 
   // Enable plugin (files already deployed to extensions dir by deployPlugin)
-  const enableResult = await oc(["plugins", "enable", "memory-openviking"]);
+  const enableResult = await oc(["plugins", "enable", "openclaw-context-plugin"]);
   if (enableResult.code !== 0) throw new Error(`openclaw plugins enable failed (exit code ${enableResult.code})`);
+  await oc(["config", "set", "plugins.slots.contextEngine", "openclaw-context-plugin"]);
 
   // Set gateway mode
   await oc(["config", "set", "gateway.mode", "local"]);
@@ -658,17 +660,17 @@ async function configureOpenClawPlugin(pluginPath = PLUGIN_DEST) {
   // Set plugin config for the selected mode
   if (selectedMode === "local") {
     const ovConfPath = join(OPENVIKING_DIR, "ov.conf");
-    await oc(["config", "set", "plugins.entries.memory-openviking.config.mode", "local"]);
-    await oc(["config", "set", "plugins.entries.memory-openviking.config.configPath", ovConfPath]);
-    await oc(["config", "set", "plugins.entries.memory-openviking.config.port", String(selectedServerPort)]);
+    await oc(["config", "set", "plugins.entries.openclaw-context-plugin.config.mode", "local"]);
+    await oc(["config", "set", "plugins.entries.openclaw-context-plugin.config.configPath", ovConfPath]);
+    await oc(["config", "set", "plugins.entries.openclaw-context-plugin.config.port", String(selectedServerPort)]);
   } else {
-    await oc(["config", "set", "plugins.entries.memory-openviking.config.mode", "remote"]);
-    await oc(["config", "set", "plugins.entries.memory-openviking.config.baseUrl", remoteBaseUrl]);
+    await oc(["config", "set", "plugins.entries.openclaw-context-plugin.config.mode", "remote"]);
+    await oc(["config", "set", "plugins.entries.openclaw-context-plugin.config.baseUrl", remoteBaseUrl]);
     if (remoteApiKey) {
-      await oc(["config", "set", "plugins.entries.memory-openviking.config.apiKey", remoteApiKey]);
+      await oc(["config", "set", "plugins.entries.openclaw-context-plugin.config.apiKey", remoteApiKey]);
     }
     if (remoteAgentId) {
-      await oc(["config", "set", "plugins.entries.memory-openviking.config.agentId", remoteAgentId]);
+      await oc(["config", "set", "plugins.entries.openclaw-context-plugin.config.agentId", remoteAgentId]);
     }
   }
 
@@ -761,7 +763,7 @@ async function main() {
   }
 
   let pluginPath;
-  const localPluginDir = openvikingRepo ? join(openvikingRepo, "examples", "openclaw-memory-plugin") : "";
+  const localPluginDir = openvikingRepo ? join(openvikingRepo, "examples", "openclaw-context-plugin") : "";
   if (openvikingRepo && existsSync(join(localPluginDir, "index.ts"))) {
     pluginPath = localPluginDir;
     info(tr(`Using local plugin from repo: ${pluginPath}`, `使用仓库内插件: ${pluginPath}`));

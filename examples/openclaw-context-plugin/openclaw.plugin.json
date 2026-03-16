@@ -1,6 +1,6 @@
 {
-  "id": "memory-openviking",
-  "kind": "memory",
+  "id": "openclaw-context-plugin",
+  "kind": "context-engine",
   "uiHints": {
     "mode": {
       "label": "Mode",
