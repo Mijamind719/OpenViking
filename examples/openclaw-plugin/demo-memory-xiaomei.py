@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OpenClaw ContextEngine Memory Plugin 演示脚本 — 用户: 小美（日常生活记录）
+OpenClaw Plugin 演示脚本 — 用户: 小美（日常生活记录）
 
 通过 OpenClaw Gateway 的 Responses API (/v1/responses) 进行多轮对话，
 验证 OpenViking 记忆插件的端到端能力。消息经过完整 agent 流水线，
@@ -26,7 +26,6 @@ OpenClaw ContextEngine Memory Plugin 演示脚本 — 用户: 小美（日常生
 """
 
 import argparse
-import sys
 import time
 
 import requests
@@ -244,7 +243,7 @@ def main():
     args = parser.parse_args()
 
     gateway_url = args.gateway.rstrip("/")
-    console.print(f"[bold]OpenClaw ContextEngine Memory Plugin 演示 — {DISPLAY_NAME}[/bold]")
+    console.print(f"[bold]OpenClaw Plugin 演示 — {DISPLAY_NAME}[/bold]")
     console.print(f"[yellow]Gateway:[/yellow] {gateway_url}")
 
     if args.phase in ("all", "chat"):

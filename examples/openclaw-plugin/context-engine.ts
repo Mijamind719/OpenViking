@@ -151,7 +151,7 @@ export function createMemoryOpenVikingContextEngine(params: {
     const before = client.getAgentId();
     if (resolvedAgentId && resolvedAgentId !== before) {
       client.setAgentId(resolvedAgentId);
-      logger.info(`memory-openviking: switched to agentId=${resolvedAgentId} for ${phase}`);
+      logger.info(`openviking: switched to agentId=${resolvedAgentId} for ${phase}`);
     }
     return client;
   };
@@ -190,7 +190,7 @@ export function createMemoryOpenVikingContextEngine(params: {
 
         const messages = afterTurnParams.messages ?? [];
         if (messages.length === 0) {
-          logger.info("memory-openviking: auto-capture skipped (messages=0)");
+          logger.info("openviking: auto-capture skipped (messages=0)");
           return;
         }
 
@@ -203,7 +203,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         const { texts: newTexts, newCount } = extractNewTurnTexts(messages, start);
 
         if (newTexts.length === 0) {
-          logger.info("memory-openviking: auto-capture skipped (no new user/assistant messages)");
+          logger.info("openviking: auto-capture skipped (no new user/assistant messages)");
           return;
         }
 
@@ -211,13 +211,13 @@ export function createMemoryOpenVikingContextEngine(params: {
         const decision = getCaptureDecision(turnText, cfg.captureMode, cfg.captureMaxLength);
         const preview = turnText.length > 80 ? `${turnText.slice(0, 80)}...` : turnText;
         logger.info(
-          "memory-openviking: capture-check " +
+          "openviking: capture-check " +
             `shouldCapture=${String(decision.shouldCapture)} ` +
             `reason=${decision.reason} newMsgCount=${newCount} text=\"${preview}\"`,
         );
 
         if (!decision.shouldCapture) {
-          logger.info("memory-openviking: auto-capture skipped (capture decision rejected)");
+          logger.info("openviking: auto-capture skipped (capture decision rejected)");
           return;
         }
 
@@ -229,10 +229,10 @@ export function createMemoryOpenVikingContextEngine(params: {
           const extracted = await client.extractSessionMemories(sessionId);
 
           logger.info(
-            `memory-openviking: auto-captured ${newCount} new messages, extracted ${extracted.length} memories`,
+            `openviking: auto-captured ${newCount} new messages, extracted ${extracted.length} memories`,
           );
           logger.info(
-            `memory-openviking: capture-detail ${toJsonLog({
+            `openviking: capture-detail ${toJsonLog({
               capturedCount: newCount,
               captured: [trimForLog(turnText, 260)],
               extractedCount: extracted.length,
@@ -242,7 +242,7 @@ export function createMemoryOpenVikingContextEngine(params: {
           if (extracted.length === 0) {
             warnOrInfo(
               logger,
-              "memory-openviking: auto-capture completed but extract returned 0 memories. " +
+              "openviking: auto-capture completed but extract returned 0 memories. " +
                 "Check OpenViking server logs for embedding/extract errors.",
             );
           }
@@ -250,7 +250,7 @@ export function createMemoryOpenVikingContextEngine(params: {
           await client.deleteSession(sessionId).catch(() => {});
         }
       } catch (err) {
-        warnOrInfo(logger, `memory-openviking: auto-capture failed: ${String(err)}`);
+        warnOrInfo(logger, `openviking: auto-capture failed: ${String(err)}`);
       }
     },
 
@@ -262,7 +262,7 @@ export function createMemoryOpenVikingContextEngine(params: {
 
       warnOrInfo(
         logger,
-        "memory-openviking: legacy compaction delegation unavailable; skipping compact",
+        "openviking: legacy compaction delegation unavailable; skipping compact",
       );
 
       return {
