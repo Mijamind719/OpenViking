@@ -20,12 +20,14 @@ export async function loadContextState(sessionFile: string): Promise<ContextPlug
   try {
     const raw = await readFile(stateFilePath(sessionFile), "utf-8");
     const parsed = JSON.parse(raw) as Partial<ContextPluginState>;
+    const mirroredMessageCount =
+      typeof parsed.mirroredMessageCount === "number" ? parsed.mirroredMessageCount : 0;
+    const rawLastCommittedMessageCount =
+      typeof parsed.lastCommittedMessageCount === "number" ? parsed.lastCommittedMessageCount : 0;
     return {
       ovSessionId: typeof parsed.ovSessionId === "string" ? parsed.ovSessionId : null,
-      mirroredMessageCount:
-        typeof parsed.mirroredMessageCount === "number" ? parsed.mirroredMessageCount : 0,
-      lastCommittedMessageCount:
-        typeof parsed.lastCommittedMessageCount === "number" ? parsed.lastCommittedMessageCount : 0,
+      mirroredMessageCount,
+      lastCommittedMessageCount: Math.max(0, Math.min(mirroredMessageCount, rawLastCommittedMessageCount)),
       updatedAt:
         typeof parsed.updatedAt === "string" && parsed.updatedAt
           ? parsed.updatedAt
@@ -40,8 +42,25 @@ export async function saveContextState(
   sessionFile: string,
   state: ContextPluginState,
 ): Promise<void> {
+  const safeMirroredMessageCount = Math.max(0, Math.floor(state.mirroredMessageCount));
+  const safeLastCommittedMessageCount = Math.max(
+    0,
+    Math.min(safeMirroredMessageCount, Math.floor(state.lastCommittedMessageCount)),
+  );
   await mkdir(dirname(sessionFile), { recursive: true });
-  await writeFile(stateFilePath(sessionFile), JSON.stringify(state, null, 2), "utf-8");
+  await writeFile(
+    stateFilePath(sessionFile),
+    JSON.stringify(
+      {
+        ...state,
+        mirroredMessageCount: safeMirroredMessageCount,
+        lastCommittedMessageCount: safeLastCommittedMessageCount,
+      },
+      null,
+      2,
+    ),
+    "utf-8",
+  );
 }
 
 export function parseSessionFileContent(content: string): MessageLike[] {
@@ -116,6 +135,7 @@ export async function syncSessionMessages(params: {
   const state: ContextPluginState = {
     ...state1,
     mirroredMessageCount: messages.length,
+    lastCommittedMessageCount: Math.min(state1.lastCommittedMessageCount, messages.length),
     updatedAt: new Date().toISOString(),
   };
   await saveContextState(params.sessionFile, state);

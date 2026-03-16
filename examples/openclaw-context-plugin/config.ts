@@ -5,7 +5,7 @@ import type { ContextOpenVikingConfig, RequiredContextOpenVikingConfig } from ".
 
 const DEFAULT_PORT = 1933;
 const DEFAULT_BASE_URL = "http://127.0.0.1:1933";
-const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_TIMEOUT_MS = 60000;
 const DEFAULT_FRESH_TAIL_MESSAGES = 16;
 const DEFAULT_RECALL_LIMIT = 6;
 const DEFAULT_RECALL_SCORE_THRESHOLD = 0.2;

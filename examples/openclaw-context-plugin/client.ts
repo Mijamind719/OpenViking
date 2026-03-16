@@ -194,6 +194,18 @@ export class OpenVikingClient {
     return this.request<string>(`/api/v1/content/read?uri=${encodeURIComponent(uri)}`);
   }
 
+  async readIfExists(uri: string): Promise<string | null> {
+    try {
+      return await this.read(uri);
+    } catch {
+      return null;
+    }
+  }
+
+  async list(uri: string): Promise<Array<Record<string, unknown>>> {
+    return this.ls(uri);
+  }
+
   async createSession(): Promise<string> {
     const result = await this.request<{ session_id: string }>("/api/v1/sessions", {
       method: "POST",
@@ -247,8 +259,42 @@ export class OpenVikingClient {
     const identity = await this.getRuntimeIdentity();
     return [
       `viking://session/${identity.userId}/${sessionId}/history`,
+      `viking://session/default/${sessionId}/history`,
       `viking://session/${sessionId}/history`,
     ];
+  }
+
+  async getLatestSessionArchiveOverview(sessionId: string): Promise<FindResultItem[]> {
+    const historyUris = await this.getSessionHistoryUris(sessionId);
+    for (const historyUri of historyUris) {
+      try {
+        const entries = await this.list(historyUri);
+        const archiveDirs = entries
+          .filter((entry) => entry?.isDir === true)
+          .filter((entry) => typeof entry.uri === "string" && /\/archive_\d+$/.test(String(entry.uri)))
+          .sort((a, b) => String(b.uri ?? "").localeCompare(String(a.uri ?? "")));
+
+        for (const entry of archiveDirs) {
+          const archiveUri = String(entry.uri);
+          const overviewUri = `${archiveUri}/.overview.md`;
+          const overview = await this.readIfExists(overviewUri);
+          if (!overview?.trim()) {
+            continue;
+          }
+          return [
+            {
+              uri: overviewUri,
+              level: 1,
+              overview: overview.trim(),
+              score: 1,
+            },
+          ];
+        }
+      } catch {
+        // Try the next URI form.
+      }
+    }
+    return [];
   }
 }
 

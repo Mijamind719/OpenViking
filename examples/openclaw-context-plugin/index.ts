@@ -39,6 +39,7 @@ const contextPlugin = {
     const cfg = contextOpenVikingConfigSchema.parse(api.pluginConfig);
     const localCacheKey = `${cfg.mode}:${cfg.baseUrl}:${cfg.configPath}:${cfg.apiKey}`;
     const stateBySessionId = new Map<string, ContextPluginState>();
+    const sessionFileBySessionId = new Map<string, string>();
 
     let clientPromise: Promise<OpenVikingClient>;
     let localProcess: ReturnType<typeof spawn> | null = null;
@@ -80,6 +81,7 @@ const contextPlugin = {
 
       async bootstrap(params: { sessionId: string; sessionFile: string }) {
         try {
+          sessionFileBySessionId.set(params.sessionId, params.sessionFile);
           const { importedCount, state } = await syncSessionMessages({
             client: await getClient(),
             sessionFile: params.sessionFile,
@@ -109,8 +111,9 @@ const contextPlugin = {
         prePromptMessageCount: number;
       }) {
         try {
+          sessionFileBySessionId.set(params.sessionId, params.sessionFile);
           const sourceMessages = params.messages.slice(params.prePromptMessageCount);
-          const allMessages = params.messages.length > 0 ? params.messages : await readSessionFileMessages(params.sessionFile);
+          const allMessages = await readSessionFileMessages(params.sessionFile);
           const result = await syncSessionMessages({
             client: await getClient(),
             sessionFile: params.sessionFile,
@@ -126,10 +129,13 @@ const contextPlugin = {
       },
 
       async assemble(params: { sessionId: string; messages: MessageLike[]; tokenBudget?: number }) {
+        const sessionFile = sessionFileBySessionId.get(params.sessionId);
+        const sessionMessages = sessionFile ? await readSessionFileMessages(sessionFile) : [];
         const assembled = await assembleOpenVikingContext({
           client: await getClient(),
           state: stateBySessionId.get(params.sessionId) ?? createEmptyState(),
           messages: coerceMessages(params.messages),
+          sessionMessages,
           tokenBudget: params.tokenBudget,
           cfg,
           logger: api.logger,
@@ -150,6 +156,7 @@ const contextPlugin = {
         force?: boolean;
       }) {
         try {
+          sessionFileBySessionId.set(params.sessionId, params.sessionFile);
           const client = await getClient();
           const sync = await syncSessionMessages({
             client,
@@ -180,6 +187,7 @@ const contextPlugin = {
             sessionMessages,
             currentTokenCount: params.currentTokenCount,
             tokenBudget: params.tokenBudget,
+            keepTailMessages: cfg.freshTailMessages,
           });
           const nextState: ContextPluginState = compacted.nextState;
           await saveContextState(params.sessionFile, nextState);

@@ -28,6 +28,20 @@ support:
   - `ov_forget`
   - `ov_expand`
 
+## Current Runtime Note
+
+In the current OpenClaw local-agent runtime, `contextEngine.assemble()` is
+invoked before the newest user turn is available to the plugin. In practice,
+that means first-turn automatic recall can lag by one turn.
+
+Short-term guidance:
+
+- prefer `ov_recall` for direct questions about remembered preferences,
+  historical facts, or prior conversation context
+- keep `ov_commit_memory` for explicit "remember this" requests
+- treat OpenViking as the source of truth for durable memory instead of relying
+  on workspace `MEMORY.md`
+
 ## Manual Dev Install
 
 ```bash

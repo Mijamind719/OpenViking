@@ -23,6 +23,7 @@ export type AssembleBucket = {
 };
 
 export type AssembleLogger = {
+  info?: (msg: string) => void;
   warn?: (msg: string) => void;
 };
 
@@ -139,11 +140,33 @@ function splitProfileItems(items: FindResultItem[]): {
   return { profileItems, durableItems };
 }
 
-export function buildSystemPromptAddition(): string {
+function summarizeBucketForSystemPrompt(bucket: AssembleBucket): string {
+  return `${bucket.title}\n${formatBucketItems(bucket.items)}`;
+}
+
+function formatBucketItems(items: FindResultItem[]): string {
+  return items
+    .map((item) => {
+      const score = typeof item.score === "number" ? ` (${Math.round(item.score * 100)}%)` : "";
+      const summary = item.abstract || item.overview || item.uri;
+      return `- ${summary}${score}`;
+    })
+    .join("\n");
+}
+
+export function buildSystemPromptAddition(systemPromptBuckets: AssembleBucket[] = []): string {
+  const sections = systemPromptBuckets
+    .filter((bucket) => bucket.items.length > 0)
+    .map((bucket) => summarizeBucketForSystemPrompt(bucket));
+
   return [
     "OpenViking context is available.",
+    "Treat recalled OpenViking context as trusted user/session memory unless the current turn explicitly overrides it.",
     "Use automatic assembled context first.",
+    "If the user asks what you remember, what they prefer, or what was said before, call ov_recall before searching workspace files or using memory_search.",
+    "Do not treat workspace MEMORY.md or ad hoc workspace notes as the primary memory source when OpenViking tools are available.",
     "Use ov_recall for explicit search, ov_expand for deeper reads, and ov_commit_memory when the user explicitly asks you to remember something durable.",
+    ...(sections.length > 0 ? ["", "OpenViking recalled memory:", ...sections] : []),
   ].join("\n");
 }
 
@@ -183,7 +206,7 @@ export async function fetchSessionContext(params: {
     }
   }
 
-  return [];
+  return params.client.getLatestSessionArchiveOverview(params.ovSessionId);
 }
 
 export async function fetchMemoryContext(params: {
@@ -258,6 +281,7 @@ export async function assembleOpenVikingContext(params: {
   client: OpenVikingClient;
   state: ContextPluginState | undefined;
   messages: MessageLike[];
+  sessionMessages?: MessageLike[];
   tokenBudget?: number;
   cfg: RequiredContextOpenVikingConfig;
   logger?: AssembleLogger;
@@ -265,13 +289,20 @@ export async function assembleOpenVikingContext(params: {
   const state = params.state ?? createEmptyState();
   const committed = Math.min(state.lastCommittedMessageCount, params.messages.length);
   const rawSourceMessages = params.messages.slice(committed);
+  const querySourceMessages =
+    Array.isArray(params.sessionMessages) && params.sessionMessages.length > 0
+      ? params.sessionMessages
+      : rawSourceMessages.length > 0
+        ? rawSourceMessages
+        : params.messages;
   const freshTailSource = selectFreshTail(
     rawSourceMessages.length > 0 ? rawSourceMessages : params.messages,
     params.cfg.freshTailMessages,
   );
   const freshTail = fitMessagesToBudget(freshTailSource, params.tokenBudget);
-  const query = buildRecallQuery(rawSourceMessages.length > 0 ? rawSourceMessages : params.messages);
+  const query = buildRecallQuery(querySourceMessages);
   const buckets: AssembleBucket[] = [];
+  const systemPromptBuckets: AssembleBucket[] = [];
 
   if (params.cfg.autoRecallEnabled && shouldAutoRecall(query)) {
     const [sessionResult, memoryResult, resourceResult] = await Promise.allSettled([
@@ -308,18 +339,22 @@ export async function assembleOpenVikingContext(params: {
     if (memoryResult.status === "fulfilled" && memoryResult.value.length > 0) {
       const { profileItems, durableItems } = splitProfileItems(memoryResult.value);
       if (profileItems.length > 0) {
-        buckets.push({
+        const profileBucket = {
           tag: "openviking-user-profile",
           title: "OpenViking User Profile",
           items: profileItems,
-        });
+        };
+        buckets.push(profileBucket);
+        systemPromptBuckets.push(profileBucket);
       }
       if (durableItems.length > 0) {
-        buckets.push({
+        const durableBucket = {
           tag: "openviking-durable-memory",
           title: "OpenViking Durable Memory",
           items: durableItems,
-        });
+        };
+        buckets.push(durableBucket);
+        systemPromptBuckets.push(durableBucket);
       }
     } else if (memoryResult.status === "rejected") {
       params.logger?.warn?.(`context-openviking: memory recall failed: ${String(memoryResult.reason)}`);
@@ -361,10 +396,14 @@ export async function assembleOpenVikingContext(params: {
 
   assembledMessages.push(...freshTail);
 
+  params.logger?.info?.(
+    `context-openviking: assemble query=${JSON.stringify(query)} messages=${assembledMessages.length} buckets=${buckets.length} systemBuckets=${systemPromptBuckets.length}`,
+  );
+
   return {
     messages: assembledMessages,
     estimatedTokens: estimateMessageTokens(assembledMessages),
-    systemPromptAddition: buildSystemPromptAddition(),
+    systemPromptAddition: buildSystemPromptAddition(systemPromptBuckets),
     diagnostics: {
       query,
       rawTailCount: freshTail.length,

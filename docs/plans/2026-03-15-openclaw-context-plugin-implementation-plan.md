@@ -204,6 +204,18 @@ Implement OpenClaw lifecycle methods with stable behavior.
 - turns sync correctly
 - compaction does not crash runtime
 
+### Current Runtime Note
+
+Current real-world validation shows that in the OpenClaw local-agent path,
+`assemble()` may run before the newest user turn is available to the plugin.
+
+Implementation consequence:
+
+- first-turn automatic recall should be treated as best-effort
+- immediate direct memory questions should rely on explicit `ov_recall`
+- this behavior should be documented as a temporary runtime adaptation, not a
+  final architectural choice
+
 ## 5.5 Workstream E: Assemble Pipeline
 
 ### Goal
@@ -229,12 +241,18 @@ Build deterministic assembled context without synthetic tool injection.
 - Default to `find()` for automatic retrieval
 - Escalate to `search()` only when heuristics say it is worth the latency
 - Use `systemPromptAddition` only for compact stable guidance
+- Add explicit instruction telling the agent to prefer `ov_recall` for
+  "what do you remember", preference, and prior-decision questions
+- Avoid treating workspace `MEMORY.md` as the primary durable memory source when
+  OpenViking tools are available
 
 ### Exit Criteria
 
 - assembled context is stable across repeated identical runs
 - recent turns are preserved
 - old session continuity is recalled after compaction
+- first-turn direct memory questions are handled acceptably through explicit
+  `ov_recall` even when automatic assembly is one-turn late
 
 ## 5.6 Workstream F: Compaction and Memory Extraction
 

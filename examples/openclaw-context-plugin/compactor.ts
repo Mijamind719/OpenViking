@@ -47,6 +47,7 @@ export async function compactOpenVikingSession(params: {
   sessionMessages: Array<Record<string, unknown>>;
   currentTokenCount?: number;
   tokenBudget?: number;
+  keepTailMessages?: number;
 }): Promise<{
   result: JsonObject;
   nextState: ContextPluginState;
@@ -63,12 +64,17 @@ export async function compactOpenVikingSession(params: {
     typeof params.tokenBudget === "number" && Number.isFinite(params.tokenBudget)
       ? Math.min(tokensBefore, Math.max(0, params.tokenBudget))
       : 0;
+  const keepTailMessages =
+    typeof params.keepTailMessages === "number" && Number.isFinite(params.keepTailMessages)
+      ? Math.max(0, Math.floor(params.keepTailMessages))
+      : 0;
+  const lastCommittedMessageCount = Math.max(0, params.state.mirroredMessageCount - keepTailMessages);
 
   return {
     result: commitResult,
     nextState: {
       ...params.state,
-      lastCommittedMessageCount: params.state.mirroredMessageCount,
+      lastCommittedMessageCount,
       updatedAt: new Date().toISOString(),
     },
     summary: summarizeCommitResult(commitResult),

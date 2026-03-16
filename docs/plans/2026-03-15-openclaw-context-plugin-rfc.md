@@ -69,6 +69,24 @@ We do not need, in v1, to solve:
 - skill-file interception hacks
 - exact replay of every historical tool block in the assembled prompt
 
+### Current Runtime Constraint
+
+In the current OpenClaw local-agent runtime, `contextEngine.assemble()` is
+invoked before the newest user turn is available to the plugin.
+
+Observed consequences:
+
+- first-turn automatic recall can lag by one turn
+- the plugin cannot depend on `assemble()` alone for immediate answers to new
+  "what do you remember?" or "what is my preference?" questions
+
+Short-term v1 policy:
+
+- do not require upstream OpenClaw changes
+- keep automatic assembled recall for continuity and next-turn recall
+- bias the agent toward explicit `ov_recall` for direct memory questions
+- treat OpenViking, not workspace `MEMORY.md`, as the primary durable memory source
+
 ## 4. Goals
 
 ### 4.1 Primary Goals
@@ -370,6 +388,18 @@ The assembled context should be built in this order:
 5. raw fresh tail
    - most recent OpenClaw messages
 
+### Short-Term Runtime Policy
+
+Because the current-turn user message may be unavailable during `assemble()`,
+v1 should explicitly instruct the model to call `ov_recall` when the user asks:
+
+- what the agent remembers
+- what the user's preferences are
+- what was previously said or decided
+
+This is a deliberate short-term adaptation to current OpenClaw runtime order,
+not the desired long-term architecture.
+
 ### Fresh Tail Rule
 
 Always preserve the most recent raw turns uncompressed.
@@ -415,6 +445,10 @@ Use only stable, reusable facts:
 - communication style
 - durable project constraints
 - recurring agent preferences
+
+For direct memory questions in v1, these buckets should be supplemented by an
+agent-initiated `ov_recall` call when automatic assembly does not yet include
+the current turn's question.
 
 ### Bucket B: Session Continuity
 

@@ -17,6 +17,22 @@ import type {
 } from "./types.js";
 import type { OpenVikingClient } from "./client.js";
 
+function normalizeCommitText(text: string): string {
+  let normalized = text.trim();
+  normalized = normalized.replace(/^user(?:'s)?\s+/i, "my ");
+  normalized = normalized.replace(/^user preference:\s*/i, "");
+  normalized = normalized.replace(/^preference:\s*/i, "");
+  normalized = normalized.replace(/^remember that\s+/i, "");
+  normalized = normalized.replace(/\s+/g, " ").replace(/[.。!?！？]+$/u, "").trim();
+  if (/^favorite editor is\b/i.test(normalized)) {
+    normalized = `my ${normalized}`;
+  }
+  if (!/^my\b/i.test(normalized) && !/^i\b/i.test(normalized)) {
+    normalized = `my preference is: ${normalized}`;
+  }
+  return `Remember that ${normalized}.`;
+}
+
 function resolveSessionState(params: {
   api: OpenClawPluginApi;
   explicitSessionId?: string;
@@ -45,7 +61,8 @@ export function registerOpenVikingTools(params: {
   api.registerTool({
     name: "ov_recall",
     label: "OpenViking Recall",
-    description: "Search OpenViking session, memory, resource, or skill context.",
+    description:
+      "Search OpenViking session, memory, resource, or skill context. Use this first for questions about remembered user preferences, prior facts, or earlier conversation context.",
     parameters: Schema.Object({
       query: Schema.String({ description: "Search query" }),
       scopes: Schema.Optional(
@@ -153,7 +170,8 @@ export function registerOpenVikingTools(params: {
   api.registerTool({
     name: "ov_commit_memory",
     label: "OpenViking Commit Memory",
-    description: "Store durable memory in OpenViking when the user explicitly asks to remember something.",
+    description:
+      "Store durable memory in OpenViking when the user explicitly asks to remember something for future turns or future sessions.",
     parameters: Schema.Object({
       content: Schema.String({ description: "Memory content to store" }),
       role: Schema.Optional(Schema.String({ description: "Session role, defaults to user" })),
@@ -172,11 +190,27 @@ export function registerOpenVikingTools(params: {
       const client = await getClient();
       const sessionId = await client.createSession();
       try {
-        await client.addSessionMessage(sessionId, role, text);
+        const normalizedText = normalizeCommitText(text);
+        await client.addSessionMessage(sessionId, role, normalizedText);
+        await client.addSessionMessage(
+          sessionId,
+          "assistant",
+          "Understood. I will remember that preference for future recommendations.",
+        );
+        await client.addSessionMessage(
+          sessionId,
+          "user",
+          "Please keep that in mind for future recommendations.",
+        );
         const extracted = await client.extractSessionMemories(sessionId);
         return {
           content: [{ type: "text", text: `Stored memory source and extracted ${extracted.length} memories.` }],
-          details: { stored: true, extractedCount: extracted.length, extracted },
+          details: {
+            stored: true,
+            extractedCount: extracted.length,
+            extracted,
+            normalizedText,
+          },
         };
       } finally {
         await client.deleteSession(sessionId).catch(() => {});
