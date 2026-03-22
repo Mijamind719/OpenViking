@@ -95,7 +95,19 @@ OpenViking 统一注册为 context engine，但继续保留原有 hook 链路。
 
 当前 `afterTurn` 会提取本轮增量 user/assistant 文本，创建临时 OpenViking session，并调用 `/extract`。
 
+### 职责
+afterTurn 在新架构中承担两件事：
+1. **无损写入**：将本轮消息写入 OpenViking session。
+2. **Compact 评估与触发**：判断是否需要调用 `session.commit()` 归档消息和提取记忆。
+两个职责顺序执行：先写入，再评估。评估结果可能导致同步或异步的 compact 调用，但不影响写入的完成。
+
 重构逻辑：
+管理一个OV的Session状态数组，每个Session对应一个OV的Session状态和信息：(下面涉及到的session都是指OV内部定义的session)
+0. Compact状态检查，检查Session数组的状态:
+   - 如果数组中没有本次会话期望的sessionId 则新建OV session;
+   - 如果数组中有本次会话期望的session, 检查session状态:
+     - 如果在Compact状态，则新建会话;
+     - 如果在非Compact状态，则复用这个session;
 1. 入口检查：autoCapture 未启用 → 直接返回(复用原逻辑)
 2. 解析身份：调用 resolveAgentId(sessionId) 获取当前 agentId，生成复合 bufferKey = sessionId:agentId
 3. 切片新消息：用 prePromptMessageCount 从完整 messages 中切出本轮新增部分(复用原逻辑)
@@ -103,13 +115,40 @@ OpenViking 统一注册为 context engine，但继续保留原有 hook 链路。
 5. 捕获判断：getCaptureDecision 判断文本是否值得捕获（长度、模式匹配等），不值得 → 返回(复用原逻辑)
 6. 累积到 buffer：按 bufferKey 查找或创建 SessionBuffer，更新 totalChars 和 messageCount
 
-阈值判断：(TODO: 文贵更新)
-达到任一阈值（字符数 >= 2000 或 消息条数 >= 6） → 立即执行 commitAndReset
-未达阈值 → 重置闲置定时器（30s），30s 内无新 afterTurn 调用则自动触发 commitAndReset
-commitAndReset 执行
+Compact 评估与触发：
+7. 按优先级从高到低逐条判断（命中第一个即触发，不继续往下）：
+   - 预算阈值：estimatedTokens >= budget × 0.75？ → 异步后台 compact
+   - 新增 token 积累：tokensAdded >= 30,000？ → 异步后台 compact
+   - 轮次积累：turns >= 20？ → 异步后台 compact
+   - 最长间隔：interval >= 30min 且 turns >= 1？ → 异步后台 compact
+   - 无条件满足 → 不触发
+8. 触发后执行 compact 提交：
+   - 调用 `session.commit(wait=false)` 提交 OpenViking session
+   - 异步：commit 在后台执行，afterTurn 立即返回，更新 session中 CompactState， 下一轮 Compact状态检查 中确认完成
 
 兜底 flush：进程退出时（service.stop() / SIGTERM / SIGINT），遍历所有 buffer 执行 commitAndReset，确保未提交的累积内容不丢失
 
+#### Compact触发条件与保护机制
+**触发条件**
+
+| 条件 | 场景 | 阈值 | 执行方式 |
+|---|---|---|---|
+| 预算阈值 | 上下文达到预警线 | `estimatedTokens >= budget × 0.75` | 异步后台 |
+| 新增 token 积累 | 大量新内容（大文件、长工具输出等） | `tokensAdded >= 30,000` | 异步后台 |
+| 轮次积累 | 短对话多轮，token 阈值不触发 | `turns >= 20` | 异步后台 |
+| 最长间隔 | 长时间未 compact | `interval >= 30min` 且 turns >= 1 | 异步后台 |
+
+典型场景：
+- **预算阈值**：上下文达到 96k（128k × 0.75），还有余量但该开始压缩了。后台异步执行 commit，不阻塞当前轮返回。这是最常见的触发路径。
+- **新增 token 积累**：总上下文才 60k，远没到阈值，但本轮用户粘贴了一个大文件（35k tokens）。虽然总量不紧张，但大量原始内容堆积不压缩会持续占用空间。对应 lossless-claw 的"叶子触发"，但阈值更高（30k vs 20k），因为 `session.commit()` 是全量归档的重操作。
+- **轮次积累**：用户在做代码审查，每轮只问一个短问题（300-500 tokens），20 轮下来才 8k tokens，token 阈值不会触发。但 20 轮的对话已经有足够的信息量值得做一次摘要和记忆提取。
+- **最长间隔**：用户上午聊了 5 轮后去开会，下午回来继续。距离上次 compact 已超过 30 分钟，触发一次整理。要求至少有 1 轮新内容，避免空 commit。
+
+**保护机制**
+| 机制 | 场景 | 说明 |
+|---|---|---|
+| 并发互斥 | 上一轮的异步 compact 还在跑，本轮又触发了条件 | 同一 session 同时只允许一个 compact，避免重复提交 |
+| 异常退出 | 进程退出时（service.stop() / SIGTERM / SIGINT），遍历所有 session 执行 commit，确保未提交的累积内容不丢失 |
 
 ## 3.3 `assemble`: 自动召回与上下文组装主链路
 
