@@ -140,7 +140,7 @@ Compact 评估与触发：
 
 典型场景：
 - **预算阈值**：上下文达到 96k（128k × 0.75），还有余量但该开始压缩了。后台异步执行 commit，不阻塞当前轮返回。这是最常见的触发路径。
-- **新增 token 积累**：总上下文才 60k，远没到阈值，但本轮用户粘贴了一个大文件（35k tokens）。虽然总量不紧张，但大量原始内容堆积不压缩会持续占用空间。对应 lossless-claw 的"叶子触发"，但阈值更高（30k vs 20k），因为 `session.commit()` 是全量归档的重操作。
+- **新增 token 积累**：总上下文才 60k，远没到阈值，但本轮用户粘贴了一个大文件（35k tokens）。虽然总量不紧张，但大量原始内容堆积不压缩会持续占用空间。因为 `session.commit()` 是全量归档的重操作。
 - **轮次积累**：用户在做代码审查，每轮只问一个短问题（300-500 tokens），20 轮下来才 8k tokens，token 阈值不会触发。但 20 轮的对话已经有足够的信息量值得做一次摘要和记忆提取。
 - **最长间隔**：用户上午聊了 5 轮后去开会，下午回来继续。距离上次 compact 已超过 30 分钟，触发一次整理。要求至少有 1 轮新内容，避免空 commit。
 
@@ -158,50 +158,99 @@ Compact 评估与触发：
 
 ### 职责
 
-`assemble()` 是真正的上下文组装入口，负责把 profile、长期记忆、recent raw turns、compact summary 统一编排成最终返回给 OpenClaw 的 messages。
+`assemble()` 是上下文组装入口，负责把 archive summaries、recent raw turns 统一编排成最终返回给 OpenClaw 的 messages，并在 token 预算内做裁剪。
 
 ### 输入
 
-- 当前 OpenClaw sessionId
-- 当前 messages
-- token budget
+- 当前 OpenClaw sessionId（sessionKey）
+- 当前 live messages（作为 fallback）
+- token budget（可选，默认 128k）
 
 ### 输出
 
-- 注入后的 `messages`
+- 注入后的 `messages`（archive 摘要 + 活跃消息混合编排）
 - `estimatedTokens`
 - 必要时的 `systemPromptAddition`
+ContextEntry:
+  kind: Literal["summary", "message"]   # 摘要 or 原始消息
+  role: str                              # "user" | "assistant"
+  content: str                           # 摘要全文 或 消息文本
+  tokens: int                            # 估算 token 数
+  archive_index: Optional[int] = None    # 仅 summary：归档序号
 
 ### 实施清单
 
-1. 读取 stable profile，包括 `profile.md` 和稳定偏好类高质量记忆。
-2. 从最近 `assembleRecallWindow` 条 user turns 构造 recall query，并做轻量 skip 判断，跳过问候、无内容、纯短句。
-3. 并行检索 `viking://user/memories` 与 `viking://agent/memories`。
-4. 复用当前 fallback recall 的本地约束：去重、`level === 2` 过滤、score threshold、query-aware ranking、摘要优先、单条截断、总 token budget。
-5. 读取 session context，包括最近 raw turns 和最近 compact summary / archive overview。
-6. 把 recalled memories、raw turns、compact summary 混合编排为最终注入消息。
-7. 统一计算 token，并在超预算时优先裁剪 recalled memories 和旧 summary，而不是裁剪最新 raw turns。
+#### 整体执行流程
 
-### 自动召回的注入形态
-
-自动召回结果不再用：
-
-```text
-<relevant-memories> ... </relevant-memories>
 ```
-
-而改为注入为合成消息，形态类似：
-
-```text
-assistant: [tool_call] memory_recall_auto({"query":"..."})
-tool: [tool_result] {"memories":[...], "source":"openviking-auto-recall"}
+OpenClaw 调用 assemble(sessionId, messages, tokenBudget)
+  │
+  ├─ 1. 数据获取与预算裁剪
+  │     OpenViking client.getContextForAssemble(sessionId, tokenBudget)
+  │       → OpenViking 服务端 Session.get_context_for_assemble(token_budget)
+  │       → 返回裁剪后的 archives + 活跃消息 + estimatedTokens + stats
+  │
+  ├─ 2. 上下文组装
+  │     archive 摘要包装为 user 消息 + 活跃消息转为 AgentMessage
+  │
+  ├─ 3. 系统提示词注入
+  │     有 archive 摘要时注入 systemPromptAddition
+  │
+  └─ 4. 返回给 OpenClaw
+        { messages, estimatedTokens, systemPromptAddition? }
+        （任何一步失败 → fallback 到原始 live messages）
 ```
+#### 数据获取与预算裁剪
 
-### 补充职责
+1. 调用 OpenViking 服务端新增的 `Session.get_context_for_assemble(token_budget)` 方法。
+2. 该方法**内部完成**构建序列、划分区域、token 预算裁剪，直接返回满足预算的 archive 摘要 + 活跃消息。调用方无需再做预算计算。
+3. 对应 HTTP 路由：`GET /api/sessions/{session_id}/context-for-assemble?token_budget=128000`。
+4. OpenViking client 新增 `getContextForAssemble(sessionId, tokenBudget)` 方法。
 
-- 读取 compact summary，而不是只靠长期记忆支撑历史连续性
-- 将最近未 compact 的 raw turns 与历史 summary 混合组装
-- 为后续 `memory_expand` 提供 summary 到 raw session 的桥梁
+`get_context_for_assemble` 与 `get_context_for_search` 的区别：
+
+| 方面 | `get_context_for_search` | `get_context_for_assemble` |
+|------|--------------------------|---------------------------|
+| 用途 | 检索意图分析 | 上下文组装 |
+| archive 选择 | 按 query 关键词相关性选 top N | 按 token 预算从新到老裁剪 |
+| 排序方式 | 相关性 + 时间降序 | 时间升序（序号） |
+| 返回消息 | 最近 max_messages 条 | 全部活跃消息（始终保留） |
+| 预算感知 | 无 | 内置 token 预算裁剪 |
+
+**`get_context_for_assemble` 内部流程：**
+
+- **划分区域**：archive 摘要 = 可淘汰，活跃消息 = 受保护（始终保留即使超预算）
+- **Token 预算裁剪**：`remainingBudget = max(0, tokenBudget - activeTokens)`，从最新 archive 向最老填充，超出时 break，保证时间线连续
+- 返回结构：
+
+```python
+{
+    "archives": [                    # 裁剪后保留的 archive 摘要（时间升序）
+        {
+            "index": 5,              # archive 序号
+            "overview": "# Session Summary\n...",  # 完整摘要
+            "abstract": "One-sentence overview...",  # 一句话摘要
+        },
+        ...
+    ],
+    "messages": [Message, ...],      # 全部活跃消息（始终保留）
+    "estimatedTokens": 12345,        # 总 token 估算（archives + messages）
+    "stats": {
+        "totalArchives": 10,         # archive 总数
+        "includedArchives": 6,       # 预算内保留的 archive 数
+        "droppedArchives": 4,        # 被裁剪的 archive 数
+        "activeTokens": 3000,        # 活跃消息占用的 tokens
+        "archiveTokens": 9000,       # 保留的 archive 占用的 tokens
+    },
+}
+```
+#### 系统提示词注入
+
+当组装结果包含 archive 摘要时，注入 `systemPromptAddition`。
+
+添加工具使用指引系统提示词，引导模型通过 `ov_archive_search` 工具获取原始消息后再回答精确性问题。
+
+OpenViking 服务端需要新增 `Session.get_archive_detail(archive_index)` 方法，返回指定 archive 的摘要 + 完整原始消息。
 
 ## 3.4 `compact`: 正式 commit 边界
 
