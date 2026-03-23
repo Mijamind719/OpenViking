@@ -338,13 +338,19 @@ class Session:
     async def commit_async(self) -> Dict[str, Any]:
         """Async commit session: archive immediately, extract memories in background.
 
-        Phase 1 (Archive): Write archive, clear messages — always inline.
+        Phase 1 (Archive prep, PathLock-protected): Copy messages, clear live
+        session, increment compression index. Uses a distributed filesystem lock
+        (PathLock) so this works across workers and processes.
         Phase 2 (Memory extraction): Always runs in background via asyncio.create_task().
 
         Returns a task_id for tracking Phase 2 progress.
         """
         from openviking.service.task_tracker import get_task_tracker
+        from openviking.storage.transaction import LockContext, get_lock_manager
 
+        # ===== Phase 1: Snapshot + clear (PathLock-protected) =====
+        # Fast pre-check: skip lock entirely if no messages (common case avoids
+        # unnecessary filesystem lock acquisition).
         if not self._messages:
             get_current_telemetry().set("memory.extracted", 0)
             return {
@@ -355,11 +361,36 @@ class Session:
                 "archived": False,
             }
 
-        # ===== Preparation =====
-        self._compression.compression_index += 1
-        messages_to_archive = self._messages.copy()
+        # Use filesystem-based distributed lock so this works across workers/processes.
+        session_path = self._viking_fs._uri_to_path(self._session_uri, ctx=self.ctx)
+        async with LockContext(get_lock_manager(), [session_path], lock_mode="point"):
+            # Authoritative check under lock: handles the race where two concurrent
+            # callers both passed the pre-check but only the first should archive.
+            if not self._messages:
+                get_current_telemetry().set("memory.extracted", 0)
+                return {
+                    "session_id": self.session_id,
+                    "status": "accepted",
+                    "task_id": None,
+                    "archive_uri": None,
+                    "archived": False,
+                }
 
-        # ===== Phase 1: Archive messages only (no LLM calls) =====
+            self._compression.compression_index += 1
+            messages_to_archive = self._messages.copy()
+            self._messages.clear()
+
+            try:
+                await self._write_to_agfs_async(messages=[])
+            except Exception:
+                # Rollback: restore messages so they aren't lost
+                self._messages.extend(messages_to_archive)
+                self._compression.compression_index -= 1
+                raise
+        # Lock released — live session is now clean.
+        # Any add_message() from here appends to the fresh empty list.
+
+        # ===== Phase 1 continued: Write raw archive (no LLM calls, no lock needed) =====
         archive_uri = (
             f"{self._session_uri}/history/archive_{self._compression.compression_index:03d}"
         )
@@ -370,8 +401,6 @@ class Session:
                 content="\n".join(lines) + "\n",
                 ctx=self.ctx,
             )
-        await self._write_to_agfs_async(messages=[])
-        self._messages.clear()
 
         self._meta.message_count = 0
         await self._save_meta()
@@ -507,9 +536,6 @@ class Session:
                             f"Updated active_count for {active_count_updated} contexts/skills"
                         )
 
-                # Write .done file
-                await self._write_done_file(archive_uri, first_message_id, last_message_id)
-
             # Phase 2 complete — update meta with telemetry and commit info
             snapshot = telemetry.finish("ok")
             if snapshot:
@@ -528,6 +554,9 @@ class Session:
             self._meta.last_commit_at = get_current_timestamp()
             self._meta.message_count = len(self._messages)
             await self._save_meta()
+
+            # Write .done file last — signals that all state is finalized
+            await self._write_done_file(archive_uri, first_message_id, last_message_id)
 
             tracker.complete(
                 task_id,
