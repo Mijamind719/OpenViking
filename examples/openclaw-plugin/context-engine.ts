@@ -8,6 +8,7 @@ import {
   trimForLog,
   toJsonLog,
 } from "./memory-ranking.js";
+import { sanitizeToolUseResultPairing } from "./session-transcript-repair.js";
 
 type AgentMessage = {
   role?: string;
@@ -59,7 +60,7 @@ type ContextEngine = {
     tokenBudget?: number;
     runtimeContext?: Record<string, unknown>;
   }) => Promise<void>;
-  assemble: (params: { sessionId: string; messages: AgentMessage[]; tokenBudget?: number }) => Promise<AssembleResult>;
+  assemble: (params: { sessionId: string; sessionKey?: string; messages: AgentMessage[]; tokenBudget?: number }) => Promise<AssembleResult>;
   compact: (params: {
     sessionId: string;
     sessionFile: string;
@@ -89,6 +90,138 @@ type Logger = {
 
 function estimateTokens(messages: AgentMessage[]): number {
   return Math.max(1, messages.length * 80);
+}
+
+function roughEstimate(messages: AgentMessage[]): number {
+  return Math.ceil(JSON.stringify(messages).length / 4);
+}
+
+function validTokenBudget(raw: unknown): number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return raw;
+  }
+  return undefined;
+}
+
+/**
+ * Convert an OpenViking stored message (parts-based format) into one or more
+ * OpenClaw AgentMessages (content-blocks format).
+ *
+ * For assistant messages with ToolParts, this produces:
+ * 1. The assistant message with toolUse blocks in its content array
+ * 2. A separate toolResult message per ToolPart (carrying tool_output)
+ */
+function convertToAgentMessages(msg: { role: string; parts: unknown[] }): AgentMessage[] {
+  const parts = msg.parts ?? [];
+  const contentBlocks: Record<string, unknown>[] = [];
+  const toolResults: AgentMessage[] = [];
+
+  for (const part of parts) {
+    if (!part || typeof part !== "object") continue;
+    const p = part as Record<string, unknown>;
+
+    if (p.type === "text" && typeof p.text === "string") {
+      contentBlocks.push({ type: "text", text: p.text });
+    } else if (p.type === "context") {
+      if (typeof p.abstract === "string" && p.abstract) {
+        contentBlocks.push({ type: "text", text: p.abstract });
+      }
+    } else if (p.type === "tool" && msg.role === "assistant") {
+      const toolId = typeof p.tool_id === "string" ? p.tool_id : "";
+      const toolName = typeof p.tool_name === "string" ? p.tool_name : "unknown";
+
+      if (toolId) {
+        contentBlocks.push({
+          type: "toolUse",
+          id: toolId,
+          name: toolName,
+          input: p.tool_input ?? {},
+        });
+
+        const status = typeof p.tool_status === "string" ? p.tool_status : "";
+        const output = typeof p.tool_output === "string" ? p.tool_output : "";
+
+        if (status === "completed" || status === "error") {
+          toolResults.push({
+            role: "toolResult",
+            toolCallId: toolId,
+            toolName,
+            content: [{ type: "text", text: output || "(no output)" }],
+            isError: status === "error",
+          } as unknown as AgentMessage);
+        } else {
+          toolResults.push({
+            role: "toolResult",
+            toolCallId: toolId,
+            toolName,
+            content: [{ type: "text", text: "(interrupted — tool did not complete)" }],
+            isError: false,
+          } as unknown as AgentMessage);
+        }
+      } else {
+        // No tool_id: degrade to text block to preserve information.
+        // Cannot emit toolUse/toolResult without a valid id.
+        const status = typeof p.tool_status === "string" ? p.tool_status : "unknown";
+        const output = typeof p.tool_output === "string" ? p.tool_output : "";
+        const segments = [`[${toolName}] (${status})`];
+        if (p.tool_input) {
+          try {
+            segments.push(`Input: ${JSON.stringify(p.tool_input)}`);
+          } catch {
+            // non-serializable input, skip
+          }
+        }
+        if (output) {
+          segments.push(`Output: ${output}`);
+        }
+        contentBlocks.push({ type: "text", text: segments.join("\n") });
+      }
+    }
+  }
+
+  const result: AgentMessage[] = [];
+
+  if (msg.role === "assistant") {
+    result.push({ role: msg.role, content: contentBlocks });
+    result.push(...toolResults);
+  } else {
+    const texts = contentBlocks
+      .filter((b) => b.type === "text")
+      .map((b) => b.text as string);
+    result.push({ role: msg.role, content: texts.join("\n") || "" });
+  }
+
+  return result;
+}
+
+function normalizeAssistantContent(messages: AgentMessage[]): void {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg?.role === "assistant" && typeof msg.content === "string") {
+      messages[i] = {
+        ...msg,
+        content: [{ type: "text", text: msg.content }],
+      };
+    }
+  }
+}
+
+function buildSystemPromptAddition(): string {
+  return [
+    "## Compressed Context",
+    "",
+    "The conversation history above includes compressed session summaries",
+    '(marked as "# Session Summary"). These summaries contain condensed',
+    "information from earlier parts of the conversation.",
+    "",
+    "**Important:**",
+    "- Summaries are compressed context — maps to details, not the details",
+    "  themselves.",
+    "- For precision questions (exact commands, file paths, timestamps,",
+    "  config values): state that the information comes from a summary and",
+    "  may need verification.",
+    "- Do not fabricate specific details from compressed summaries.",
+  ].join("\n");
 }
 
 async function tryLegacyCompact(params: {
@@ -220,10 +353,48 @@ export function createMemoryOpenVikingContextEngine(params: {
     },
 
     async assemble(assembleParams): Promise<AssembleResult> {
-      return {
-        messages: assembleParams.messages,
-        estimatedTokens: estimateTokens(assembleParams.messages),
-      };
+      const { messages } = assembleParams;
+      const tokenBudget = validTokenBudget(assembleParams.tokenBudget) ?? 128_000;
+
+      try {
+        const client = await getClient();
+        const OVSessionId = assembleParams.sessionKey?.trim() || assembleParams.sessionId;
+        const agentId = resolveAgentId(OVSessionId);
+        const ctx = await client.getContextForAssemble(
+          OVSessionId,
+          tokenBudget,
+          agentId,
+        );
+        if (!ctx || (ctx.archives.length === 0 && ctx.messages.length === 0)) {
+          return { messages, estimatedTokens: roughEstimate(messages) };
+        }
+
+        if (ctx.archives.length === 0 && ctx.messages.length < messages.length) {
+          return { messages, estimatedTokens: roughEstimate(messages) };
+        }
+
+        const assembled: AgentMessage[] = [
+          ...ctx.archives.map((a) => ({ role: "user" as const, content: a.overview })),
+          ...ctx.messages.flatMap((m) => convertToAgentMessages(m)),
+        ];
+
+        normalizeAssistantContent(assembled);
+        const sanitized = sanitizeToolUseResultPairing(assembled as never[]) as AgentMessage[];
+
+        if (sanitized.length === 0 && messages.length > 0) {
+          return { messages, estimatedTokens: roughEstimate(messages) };
+        }
+
+        return {
+          messages: sanitized,
+          estimatedTokens: ctx.estimatedTokens,
+          ...(ctx.archives.length > 0
+            ? { systemPromptAddition: buildSystemPromptAddition() }
+            : {}),
+        };
+      } catch {
+        return { messages, estimatedTokens: roughEstimate(messages) };
+      }
     },
 
     async afterTurn(afterTurnParams): Promise<void> {

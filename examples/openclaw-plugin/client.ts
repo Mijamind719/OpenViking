@@ -361,6 +361,30 @@ export class OpenVikingClient {
     );
   }
 
+  async getContextForAssemble(
+    sessionId: string,
+    tokenBudget: number = 128_000,
+    agentId?: string,
+  ): Promise<{
+    archives: Array<{ index: number; overview: string; abstract: string }>;
+    messages: Array<{ id: string; role: string; parts: unknown[]; created_at: string }>;
+    estimatedTokens: number;
+    stats: {
+      totalArchives: number;
+      includedArchives: number;
+      droppedArchives: number;
+      failedArchives: number;
+      activeTokens: number;
+      archiveTokens: number;
+    };
+  }> {
+    return this.request(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/context-for-assemble?token_budget=${tokenBudget}`,
+      { method: "GET" },
+      agentId,
+    );
+  }
+
   async deleteSession(sessionId: string, agentId?: string): Promise<void> {
     await this.request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }, agentId);
   }

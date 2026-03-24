@@ -143,6 +143,20 @@ async def get_session(
     return Response(status="ok", result=result)
 
 
+@router.get("/{session_id}/context-for-assemble")
+async def get_context_for_assemble(
+    session_id: str = Path(..., description="Session ID"),
+    token_budget: int = Query(128_000, description="Token budget for context assembly"),
+    _ctx: RequestContext = Depends(get_request_context),
+):
+    """Get trimmed context (archive summaries + active messages) for assemble."""
+    service = get_service()
+    session = service.sessions.session(_ctx, session_id)
+    await session.load()
+    result = await session.get_context_for_assemble(token_budget)
+    return Response(status="ok", result=result)
+
+
 @router.delete("/{session_id}")
 async def delete_session(
     session_id: str = Path(..., description="Session ID"),
