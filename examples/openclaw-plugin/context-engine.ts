@@ -1,4 +1,4 @@
-import type { OpenVikingClient, CommitSessionResult } from "./client.js";
+import type { OpenVikingClient } from "./client.js";
 import type { MemoryOpenVikingConfig } from "./config.js";
 import {
   getCaptureDecision,
@@ -263,10 +263,32 @@ function warnOrInfo(logger: Logger, message: string): void {
   logger.info(message);
 }
 
-/** Sum all category counts in a memories_extracted record. */
-function totalMemories(m: CommitSessionResult["memories_extracted"]): number {
-  if (!m || typeof m !== "object") return 0;
-  return Object.values(m).reduce((sum, n) => sum + (n ?? 0), 0);
+function formatMessagesForLog(label: string, messages: AgentMessage[]): string {
+  const lines: string[] = [`===== ${label} (${messages.length} msgs) =====`];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i] as Record<string, unknown>;
+    const role = msg.role ?? "?";
+    const raw = msg.content;
+    let text: string;
+    if (typeof raw === "string") {
+      text = raw;
+    } else if (Array.isArray(raw)) {
+      text = (raw as Record<string, unknown>[])
+        .map((b) => {
+          if (b.type === "text") return b.text;
+          if (b.type === "toolUse") return `[toolUse: ${b.name}]`;
+          if (b.type === "toolResult") return `[toolResult]`;
+          return `[${b.type}]`;
+        })
+        .join("\n");
+    } else {
+      text = JSON.stringify(raw, null, 2);
+    }
+    lines.push(`--- [${i}] ${role} ---`);
+    lines.push(String(text));
+  }
+  lines.push(`===== /${label} =====`);
+  return lines.join("\n");
 }
 
 export function createMemoryOpenVikingContextEngine(params: {
@@ -288,23 +310,18 @@ export function createMemoryOpenVikingContextEngine(params: {
     resolveAgentId,
   } = params;
 
-  /** Returns true when commit + extraction succeeded, false otherwise. */
+  /** Returns true when commit (Phase 1 archive) succeeded, false otherwise. Memory extraction runs in background. */
   async function doCommitOVSession(sessionId: string): Promise<boolean> {
     try {
       const client = await getClient();
       const agentId = resolveAgentId(sessionId);
-      const commitResult = await client.commitSession(sessionId, { wait: true, agentId });
-      const memCount = totalMemories(commitResult.memories_extracted);
+      const commitResult = await client.commitSession(sessionId, { wait: false, agentId });
       if (commitResult.status === "failed") {
-        warnOrInfo(logger, `openviking: commit Phase 2 failed for session=${sessionId}: ${commitResult.error ?? "unknown"}`);
-        return false;
-      }
-      if (commitResult.status === "timeout") {
-        warnOrInfo(logger, `openviking: commit Phase 2 timed out for session=${sessionId}, task_id=${commitResult.task_id ?? "none"}`);
+        warnOrInfo(logger, `openviking: commit failed for session=${sessionId}: ${commitResult.error ?? "unknown"}`);
         return false;
       }
       logger.info(
-        `openviking: committed OV session=${sessionId}, archived=${commitResult.archived ?? false}, memories=${memCount}, task_id=${commitResult.task_id ?? "none"}`,
+        `openviking: committed OV session=${sessionId}, archived=${commitResult.archived ?? false}, task_id=${commitResult.task_id ?? "none"}`,
       );
       return true;
     } catch (err) {
@@ -336,6 +353,9 @@ export function createMemoryOpenVikingContextEngine(params: {
       const { messages } = assembleParams;
       const tokenBudget = validTokenBudget(assembleParams.tokenBudget) ?? 128_000;
 
+      const originalTokens = roughEstimate(messages);
+      logger.info(formatMessagesForLog(`ORIGINAL CONTEXT (openclaw raw) msgs=${messages.length} ~${originalTokens} tokens`, messages));
+
       try {
         const client = await getClient();
         const OVSessionId = assembleParams.sessionId;
@@ -345,11 +365,17 @@ export function createMemoryOpenVikingContextEngine(params: {
           tokenBudget,
           agentId,
         );
-        if (!ctx || (ctx.archives.length === 0 && ctx.messages.length === 0)) {
+        const archiveCount = ctx?.archives?.length ?? 0;
+        const activeCount = ctx?.messages?.length ?? 0;
+        logger.info(`openviking: assemble OV ctx archives=${archiveCount} active=${activeCount}`);
+
+        if (!ctx || (archiveCount === 0 && activeCount === 0)) {
+          logger.info("openviking: assemble passthrough (no OV data)");
           return { messages, estimatedTokens: roughEstimate(messages) };
         }
 
         if (ctx.archives.length === 0 && ctx.messages.length < messages.length) {
+          logger.info(`openviking: assemble passthrough (OV msgs=${ctx.messages.length} < input msgs=${messages.length})`);
           return { messages, estimatedTokens: roughEstimate(messages) };
         }
 
@@ -362,8 +388,12 @@ export function createMemoryOpenVikingContextEngine(params: {
         const sanitized = sanitizeToolUseResultPairing(assembled as never[]) as AgentMessage[];
 
         if (sanitized.length === 0 && messages.length > 0) {
+          logger.info("openviking: assemble passthrough (sanitized=0, falling back to original)");
           return { messages, estimatedTokens: roughEstimate(messages) };
         }
+
+        const assembledTokens = roughEstimate(sanitized);
+        logger.info(formatMessagesForLog(`ASSEMBLED CONTEXT (openviking) ~${assembledTokens} tokens (ovEstimate=${ctx.estimatedTokens})`, sanitized));
 
         return {
           messages: sanitized,
@@ -388,7 +418,7 @@ export function createMemoryOpenVikingContextEngine(params: {
 
         const messages = afterTurnParams.messages ?? [];
         if (messages.length === 0) {
-          logger.info("openviking: auto-capture skipped (messages=0)");
+          logger.info("openviking: afterTurn skipped (messages=0)");
           return;
         }
 
@@ -401,26 +431,31 @@ export function createMemoryOpenVikingContextEngine(params: {
         const { texts: newTexts, newCount } = extractNewTurnTexts(messages, start);
 
         if (newTexts.length === 0) {
-          logger.info("openviking: auto-capture skipped (no new user/assistant messages)");
+          logger.info("openviking: afterTurn skipped (no new user/assistant messages)");
           return;
         }
 
-        const turnText = newTexts.join("\n");
-        const decision = getCaptureDecision(turnText, cfg.captureMode, cfg.captureMaxLength);
-        const preview = turnText.length > 80 ? `${turnText.slice(0, 80)}...` : turnText;
-        logger.info(
-          "openviking: capture-check " +
-            `shouldCapture=${String(decision.shouldCapture)} ` +
-            `reason=${decision.reason} newMsgCount=${newCount} text=\"${preview}\"`,
-        );
-
-        if (!decision.shouldCapture) {
-          logger.info("openviking: auto-capture skipped (capture decision rejected)");
-          return;
-        }
-
+        // Always store messages into OV session so assemble can retrieve them.
+        // Capture decision only controls whether we trigger commit (archive+extract).
         const client = await getClient();
-        await client.addSessionMessage(OVSessionId, "user", decision.normalizedText, agentId);
+        const turnText = newTexts.join("\n");
+        const sanitized = turnText.replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, " ").replace(/\s+/g, " ").trim();
+
+        if (sanitized) {
+          await client.addSessionMessage(OVSessionId, "user", sanitized, agentId);
+          logger.info(
+            `openviking: afterTurn stored ${newCount} msgs in session=${OVSessionId} (${sanitized.length} chars)`,
+          );
+        } else {
+          logger.info("openviking: afterTurn skipped store (sanitized text empty)");
+          return;
+        }
+
+        // Capture decision: controls commit (archive + memory extraction)
+        const decision = getCaptureDecision(turnText, cfg.captureMode, cfg.captureMaxLength);
+        logger.info(
+          `openviking: capture-check shouldCapture=${String(decision.shouldCapture)} reason=${decision.reason}`,
+        );
 
         const session = await client.getSession(OVSessionId, agentId);
         const pendingTokens = session.pending_tokens ?? 0;
@@ -432,15 +467,17 @@ export function createMemoryOpenVikingContextEngine(params: {
           return;
         }
 
-        const commitResult = await client.commitSession(OVSessionId, { wait: true, agentId });
-        const memCount = totalMemories(commitResult.memories_extracted);
         logger.info(
-          `openviking: committed ${newCount} messages in session=${OVSessionId}, ` +
-            `status=${commitResult.status}, archived=${commitResult.archived ?? false}, memories=${memCount}, ` +
+          `openviking: committing session=${OVSessionId} (wait=false), pendingTokens=${pendingTokens}, threshold=${cfg.commitTokenThreshold}`,
+        );
+        const commitResult = await client.commitSession(OVSessionId, { wait: false, agentId });
+        logger.info(
+          `openviking: committed session=${OVSessionId}, ` +
+            `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
             `task_id=${commitResult.task_id ?? "none"} ${toJsonLog({ captured: [trimForLog(turnText, 260)] })}`,
         );
       } catch (err) {
-        warnOrInfo(logger, `openviking: auto-capture failed: ${String(err)}`);
+        warnOrInfo(logger, `openviking: afterTurn failed: ${String(err)}`);
       }
     },
 
