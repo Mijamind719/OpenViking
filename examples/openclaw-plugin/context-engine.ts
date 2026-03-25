@@ -9,6 +9,7 @@ import {
   toJsonLog,
 } from "./memory-ranking.js";
 import { sanitizeToolUseResultPairing } from "./session-transcript-repair.js";
+import { messagesDigest, ovDiag } from "./diagnostics.js";
 
 type AgentMessage = {
   role?: string;
@@ -88,10 +89,6 @@ type Logger = {
   error: (msg: string) => void;
 };
 
-function estimateTokens(messages: AgentMessage[]): number {
-  return Math.max(1, messages.length * 80);
-}
-
 function roughEstimate(messages: AgentMessage[]): number {
   return Math.ceil(JSON.stringify(messages).length / 4);
 }
@@ -161,7 +158,7 @@ function convertToAgentMessages(msg: { role: string; parts: unknown[] }): AgentM
             role: "toolResult",
             toolCallId: toolId,
             toolName,
-            content: [{ type: "text", text: "(interrupted — tool did not complete)" }],
+            content: [{ type: "text", text: "(interrupted — missing tool result; tool did not complete)" }],
             isError: false,
           } as unknown as AgentMessage);
         }
@@ -302,6 +299,10 @@ function formatMessagesForLog(label: string, messages: AgentMessage[]): string {
   return lines.join("\n");
 }
 
+function diagnosticsSessionId(sessionId: string | undefined): string {
+  return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : "unknown";
+}
+
 export function createMemoryOpenVikingContextEngine(params: {
   id: string;
   name: string;
@@ -372,9 +373,16 @@ export function createMemoryOpenVikingContextEngine(params: {
 
     async assemble(assembleParams): Promise<AssembleResult> {
       const { messages } = assembleParams;
+      const diagSessionId = diagnosticsSessionId(assembleParams.sessionId);
       const tokenBudget = validTokenBudget(assembleParams.tokenBudget) ?? 128_000;
 
       const originalTokens = roughEstimate(messages);
+      ovDiag(diagSessionId, "assemble_input", {
+        messagesCount: messages.length,
+        inputTokenEstimate: originalTokens,
+        tokenBudget,
+        messages: messagesDigest(messages),
+      });
       logger.info(formatMessagesForLog(`ORIGINAL CONTEXT (openclaw raw) msgs=${messages.length} ~${originalTokens} tokens`, messages));
 
       try {
@@ -391,11 +399,47 @@ export function createMemoryOpenVikingContextEngine(params: {
         logger.info(`openviking: assemble OV ctx archives=${archiveCount} active=${activeCount}`);
 
         if (!ctx || (archiveCount === 0 && activeCount === 0)) {
+          ovDiag(diagSessionId, "context_assemble", {
+            archiveCount,
+            activeCount,
+            ovEstimatedTokens: 0,
+            assembledMessagesCount: messages.length,
+            assembledMessages: messagesDigest(messages),
+            passthrough: true,
+            reason: "no_ov_data",
+          });
+          ovDiag(diagSessionId, "assemble_output", {
+            outputMessagesCount: messages.length,
+            estimatedTokens: roughEstimate(messages),
+            inputTokenEstimate: originalTokens,
+            systemPromptAdditionLength: 0,
+            hasSystemPromptAddition: false,
+            passthrough: true,
+            reason: "no_ov_data",
+          });
           logger.info("openviking: assemble passthrough (no OV data)");
           return { messages, estimatedTokens: roughEstimate(messages) };
         }
 
         if (ctx.archives.length === 0 && ctx.messages.length < messages.length) {
+          ovDiag(diagSessionId, "context_assemble", {
+            archiveCount,
+            activeCount,
+            ovEstimatedTokens: ctx.estimatedTokens ?? 0,
+            assembledMessagesCount: messages.length,
+            assembledMessages: messagesDigest(messages),
+            passthrough: true,
+            reason: "active_messages_shorter_than_input",
+          });
+          ovDiag(diagSessionId, "assemble_output", {
+            outputMessagesCount: messages.length,
+            estimatedTokens: roughEstimate(messages),
+            inputTokenEstimate: originalTokens,
+            systemPromptAdditionLength: 0,
+            hasSystemPromptAddition: false,
+            passthrough: true,
+            reason: "active_messages_shorter_than_input",
+          });
           logger.info(`openviking: assemble passthrough (OV msgs=${ctx.messages.length} < input msgs=${messages.length})`);
           return { messages, estimatedTokens: roughEstimate(messages) };
         }
@@ -409,21 +453,62 @@ export function createMemoryOpenVikingContextEngine(params: {
         const sanitized = sanitizeToolUseResultPairing(assembled as never[]) as AgentMessage[];
 
         if (sanitized.length === 0 && messages.length > 0) {
+          ovDiag(diagSessionId, "context_assemble", {
+            archiveCount,
+            activeCount,
+            ovEstimatedTokens: ctx.estimatedTokens ?? 0,
+            assembledMessagesCount: messages.length,
+            assembledMessages: messagesDigest(messages),
+            passthrough: true,
+            reason: "sanitized_empty",
+          });
+          ovDiag(diagSessionId, "assemble_output", {
+            outputMessagesCount: messages.length,
+            estimatedTokens: roughEstimate(messages),
+            inputTokenEstimate: originalTokens,
+            systemPromptAdditionLength: 0,
+            hasSystemPromptAddition: false,
+            passthrough: true,
+            reason: "sanitized_empty",
+          });
           logger.info("openviking: assemble passthrough (sanitized=0, falling back to original)");
           return { messages, estimatedTokens: roughEstimate(messages) };
         }
 
         const assembledTokens = roughEstimate(sanitized);
+        const systemPromptAddition = ctx.archives.length > 0 ? buildSystemPromptAddition() : undefined;
+        ovDiag(diagSessionId, "context_assemble", {
+          archiveCount,
+          activeCount,
+          ovEstimatedTokens: ctx.estimatedTokens ?? 0,
+          assembledMessagesCount: sanitized.length,
+          assembledMessages: messagesDigest(sanitized),
+          passthrough: false,
+          hasSystemPromptAddition: Boolean(systemPromptAddition),
+        });
+        ovDiag(diagSessionId, "assemble_output", {
+          outputMessagesCount: sanitized.length,
+          estimatedTokens: ctx.estimatedTokens,
+          assembledTokenEstimate: assembledTokens,
+          inputTokenEstimate: originalTokens,
+          systemPromptAdditionLength: systemPromptAddition?.length ?? 0,
+          hasSystemPromptAddition: Boolean(systemPromptAddition),
+          passthrough: false,
+        });
         logger.info(formatMessagesForLog(`ASSEMBLED CONTEXT (openviking) ~${assembledTokens} tokens (ovEstimate=${ctx.estimatedTokens})`, sanitized));
 
         return {
           messages: sanitized,
           estimatedTokens: ctx.estimatedTokens,
-          ...(ctx.archives.length > 0
-            ? { systemPromptAddition: buildSystemPromptAddition() }
+          ...(systemPromptAddition
+            ? { systemPromptAddition }
             : {}),
         };
-      } catch {
+      } catch (err) {
+        ovDiag(diagSessionId, "assemble_error", {
+          error: String(err),
+          fallbackToOriginal: true,
+        });
         return { messages, estimatedTokens: roughEstimate(messages) };
       }
     },
@@ -436,23 +521,39 @@ export function createMemoryOpenVikingContextEngine(params: {
       try {
         const sessionKey = extractSessionKey(afterTurnParams.runtimeContext);
         const OVSessionId = sessionKey ?? afterTurnParams.sessionId;
+        const diagSessionId = diagnosticsSessionId(OVSessionId);
         const agentId = resolveAgentId(OVSessionId);
 
         const messages = afterTurnParams.messages ?? [];
-        if (messages.length === 0) {
-          logger.info("openviking: afterTurn skipped (messages=0)");
-          return;
-        }
-
         const start =
           typeof afterTurnParams.prePromptMessageCount === "number" &&
           afterTurnParams.prePromptMessageCount >= 0
             ? afterTurnParams.prePromptMessageCount
             : 0;
+        if (messages.length === 0) {
+          ovDiag(diagSessionId, "afterTurn_entry", {
+            totalMessages: messages.length,
+            prePromptMessageCount: start,
+            newMessageCount: 0,
+            sessionKeyPresent: Boolean(sessionKey),
+            isHeartbeat: afterTurnParams.isHeartbeat === true,
+          });
+          ovDiag(diagSessionId, "capture_skip", { reason: "messages_empty" });
+          logger.info("openviking: afterTurn skipped (messages=0)");
+          return;
+        }
 
         const { texts: newTexts, newCount } = extractNewTurnTexts(messages, start);
+        ovDiag(diagSessionId, "afterTurn_entry", {
+          totalMessages: messages.length,
+          prePromptMessageCount: start,
+          newMessageCount: newCount,
+          sessionKeyPresent: Boolean(sessionKey),
+          isHeartbeat: afterTurnParams.isHeartbeat === true,
+        });
 
         if (newTexts.length === 0) {
+          ovDiag(diagSessionId, "capture_skip", { reason: "no_new_messages", newMessageCount: newCount });
           logger.info("openviking: afterTurn skipped (no new user/assistant messages)");
           return;
         }
@@ -465,21 +566,47 @@ export function createMemoryOpenVikingContextEngine(params: {
 
         if (sanitized) {
           await client.addSessionMessage(OVSessionId, "user", sanitized, agentId);
+          ovDiag(diagSessionId, "capture_store", {
+            stored: true,
+            newMessageCount: newCount,
+            chars: sanitized.length,
+            turnTextPreview: trimForLog(turnText, 260),
+            sanitizedPreview: trimForLog(sanitized, 260),
+          });
           logger.info(
             `openviking: afterTurn stored ${newCount} msgs in session=${OVSessionId} (${sanitized.length} chars)`,
           );
         } else {
+          ovDiag(diagSessionId, "capture_store", {
+            stored: false,
+            newMessageCount: newCount,
+            chars: 0,
+            turnTextPreview: trimForLog(turnText, 260),
+            sanitizedPreview: "",
+          });
+          ovDiag(diagSessionId, "capture_skip", { reason: "sanitized_empty", newMessageCount: newCount });
           logger.info("openviking: afterTurn skipped store (sanitized text empty)");
           return;
         }
 
         // Capture decision: controls commit (archive + memory extraction)
         const decision = getCaptureDecision(turnText, cfg.captureMode, cfg.captureMaxLength);
+        ovDiag(diagSessionId, "capture_check", {
+          shouldCapture: decision.shouldCapture,
+          reason: decision.reason,
+          captureMode: cfg.captureMode,
+          captureMaxLength: cfg.captureMaxLength,
+          normalizedPreview: trimForLog(decision.normalizedText, 260),
+        });
         logger.info(
           `openviking: capture-check shouldCapture=${String(decision.shouldCapture)} reason=${decision.reason}`,
         );
 
         if (!decision.shouldCapture) {
+          ovDiag(diagSessionId, "capture_skip", {
+            reason: "decision_rejected",
+            decisionReason: decision.reason,
+          });
           logger.info("openviking: afterTurn skipped commit (capture decision rejected)");
           return;
         }
@@ -488,6 +615,11 @@ export function createMemoryOpenVikingContextEngine(params: {
         const pendingTokens = session.pending_tokens ?? 0;
 
         if (pendingTokens < cfg.commitTokenThreshold) {
+          ovDiag(diagSessionId, "capture_skip", {
+            reason: "pending_tokens_below_threshold",
+            pendingTokens,
+            commitTokenThreshold: cfg.commitTokenThreshold,
+          });
           logger.info(
             `openviking: pending_tokens=${pendingTokens}/${cfg.commitTokenThreshold} in session=${OVSessionId}, deferring commit`,
           );
@@ -498,12 +630,26 @@ export function createMemoryOpenVikingContextEngine(params: {
           `openviking: committing session=${OVSessionId} (wait=false), pendingTokens=${pendingTokens}, threshold=${cfg.commitTokenThreshold}`,
         );
         const commitResult = await client.commitSession(OVSessionId, { wait: false, agentId });
+        ovDiag(diagSessionId, "capture_commit", {
+          pendingTokens,
+          commitTokenThreshold: cfg.commitTokenThreshold,
+          status: commitResult.status,
+          archived: commitResult.archived ?? false,
+          taskId: commitResult.task_id ?? null,
+          extractedMemories: totalExtractedMemories(commitResult.memories_extracted),
+          capturedPreview: trimForLog(turnText, 260),
+        });
         logger.info(
           `openviking: committed session=${OVSessionId}, ` +
             `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
             `task_id=${commitResult.task_id ?? "none"} ${toJsonLog({ captured: [trimForLog(turnText, 260)] })}`,
         );
       } catch (err) {
+        const sessionKey = extractSessionKey(afterTurnParams.runtimeContext);
+        const OVSessionId = sessionKey ?? afterTurnParams.sessionId;
+        ovDiag(diagnosticsSessionId(OVSessionId), "capture_error", {
+          error: String(err),
+        });
         warnOrInfo(logger, `openviking: afterTurn failed: ${String(err)}`);
       }
     },

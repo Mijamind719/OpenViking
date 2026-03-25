@@ -11,6 +11,7 @@ import {
   extractLatestUserText,
 } from "./text-utils.js";
 import {
+  trimForLog,
   clampScore,
   postProcessMemories,
   formatMemoryLines,
@@ -18,6 +19,7 @@ import {
   summarizeInjectionMemories,
   pickMemoriesForInjection,
 } from "./memory-ranking.js";
+import { ovDiag } from "./diagnostics.js";
 import {
   IS_WIN,
   waitForHealth,
@@ -71,6 +73,10 @@ type OpenClawPluginApi = {
 const MAX_OPENVIKING_STDERR_LINES = 200;
 const MAX_OPENVIKING_STDERR_CHARS = 256_000;
 const AUTO_RECALL_TIMEOUT_MS = 5_000;
+
+function diagnosticsSessionId(sessionId: string | undefined): string {
+  return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : "unknown";
+}
 
 function totalCommitMemories(r: CommitSessionResult): number {
   const m = r.memories_extracted;
@@ -476,6 +482,7 @@ const contextEnginePlugin = {
       rememberSessionAgentId(ctx ?? {});
 
       const hookSessionId = ctx?.sessionId ?? ctx?.sessionKey ?? "";
+      const diagSessionId = diagnosticsSessionId(hookSessionId);
       const agentId = resolveAgentId(hookSessionId);
       let client: OpenVikingClient;
       try {
@@ -485,6 +492,10 @@ const contextEnginePlugin = {
           "openviking: client initialization timeout (OpenViking service not ready yet)"
         );
       } catch (err) {
+        ovDiag(diagSessionId, "recall_error", {
+          stage: "client_init",
+          error: String(err),
+        });
         api.logger.warn?.(`openviking: failed to get client: ${String(err)}`);
         return;
       }
@@ -501,6 +512,14 @@ const contextEnginePlugin = {
 
       if (cfg.autoRecall && queryText.length >= 5) {
         const precheck = await quickRecallPrecheck(cfg.mode, cfg.baseUrl, cfg.port, localProcess);
+        ovDiag(diagSessionId, "recall_precheck", {
+          queryPreview: trimForLog(queryText, 260),
+          queryLength: queryText.length,
+          mode: cfg.mode,
+          baseUrl: cfg.baseUrl,
+          ok: precheck.ok,
+          reason: precheck.reason ?? null,
+        });
         if (!precheck.ok) {
           api.logger.info(
             `openviking: skipping auto-recall because precheck failed (${precheck.reason})`,
@@ -542,6 +561,17 @@ const contextEnginePlugin = {
                   scoreThreshold: cfg.recallScoreThreshold,
                 });
                 const memories = pickMemoriesForInjection(processed, cfg.recallLimit, queryText);
+                ovDiag(diagSessionId, "recall_search", {
+                  queryPreview: trimForLog(queryText, 260),
+                  candidateLimit,
+                  userResultCount: Array.isArray(userResult.memories) ? userResult.memories.length : 0,
+                  agentResultCount: Array.isArray(agentResult.memories) ? agentResult.memories.length : 0,
+                  mergedCount: uniqueMemories.length,
+                  leafCount: leafOnly.length,
+                  filteredCount: processed.length,
+                  selectedCount: memories.length,
+                  scoreThreshold: cfg.recallScoreThreshold,
+                });
 
                 if (memories.length > 0) {
                   const { lines: memoryLines, estimatedTokens } = await buildMemoryLinesWithBudget(
@@ -560,17 +590,36 @@ const contextEnginePlugin = {
                   api.logger.info(
                     `openviking: inject-detail ${toJsonLog({ count: memories.length, memories: summarizeInjectionMemories(memories) })}`,
                   );
+                  ovDiag(diagSessionId, "recall_inject", {
+                    injectedCount: memoryLines.length,
+                    estimatedTokens,
+                    recallTokenBudget: cfg.recallTokenBudget,
+                    prependContextProduced: true,
+                    memories: summarizeInjectionMemories(memories),
+                  });
                   prependContextParts.push(
                     "<relevant-memories>\nThe following OpenViking memories may be relevant:\n" +
                       `${memoryContext}\n` +
                     "</relevant-memories>",
                   );
+                } else {
+                  ovDiag(diagSessionId, "recall_inject", {
+                    injectedCount: 0,
+                    estimatedTokens: 0,
+                    recallTokenBudget: cfg.recallTokenBudget,
+                    prependContextProduced: false,
+                    memories: [],
+                  });
                 }
               })(),
               AUTO_RECALL_TIMEOUT_MS,
               "openviking: auto-recall search timeout",
             );
           } catch (err) {
+            ovDiag(diagSessionId, "recall_error", {
+              stage: "auto_recall",
+              error: String(err),
+            });
             api.logger.warn(`openviking: auto-recall failed: ${String(err)}`);
           }
         }
@@ -580,6 +629,12 @@ const contextEnginePlugin = {
         const decision = isTranscriptLikeIngest(queryText, {
           minSpeakerTurns: cfg.ingestReplyAssistMinSpeakerTurns,
           minChars: cfg.ingestReplyAssistMinChars,
+        });
+        ovDiag(diagSessionId, "ingest_reply_assist", {
+          applied: decision.shouldAssist,
+          reason: decision.reason,
+          speakerTurns: decision.speakerTurns,
+          chars: decision.chars,
         });
         if (decision.shouldAssist) {
           api.logger.info(
