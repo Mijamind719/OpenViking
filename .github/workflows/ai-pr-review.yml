@@ -1,0 +1,37 @@
+name: AI PR Review Bot
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    if: ${{ github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.11'
+
+    - name: Run AI review bot
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_EVENT_PATH: ${{ github.event_path }}
+        GITHUB_API_URL: ${{ github.api_url }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+        OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+        REVIEW_BOT_HANDLE: ${{ vars.REVIEW_BOT_HANDLE }}
+        REVIEW_MAX_COMMENTS: ${{ vars.REVIEW_MAX_COMMENTS }}
+        REVIEW_MAX_FILES: ${{ vars.REVIEW_MAX_FILES }}
+        REVIEW_MAX_PATCH_CHARS: ${{ vars.REVIEW_MAX_PATCH_CHARS }}
+      run: python -m openviking.tools.github_review_bot
