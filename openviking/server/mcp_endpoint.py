@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0
 """MCP (Model Context Protocol) endpoint for OpenViking server.
 
-Exposes 7 tools to Claude Code (or any MCP client) via streamable HTTP:
-  search, read, list, store, add_resource, forget, health
+Exposes MCP tools to Claude Code (or any MCP client) via streamable HTTP:
+  search, read, list, remember, add_resource, grep, glob, forget, health
 
 Mounted on the FastAPI app at /mcp. The MCP session manager lifecycle is
 tied to the FastAPI app lifespan (not a sub-app lifespan) so the task group
@@ -213,7 +213,7 @@ async def ls(uri: str, recursive: bool = False) -> str:
     return "\n".join(lines)
 
 
-# -- store -----------------------------------------------------------------
+# -- remember --------------------------------------------------------------
 
 
 class StoreMessage(BaseModel):
@@ -222,7 +222,7 @@ class StoreMessage(BaseModel):
 
 
 @mcp.tool()
-async def store(messages: list[StoreMessage]) -> str:
+async def remember(messages: list[StoreMessage]) -> str:
     """Store information into OpenViking long-term memory. Use when the user says 'remember this', shares preferences, important facts, or decisions worth persisting."""
     import uuid
 
