@@ -141,6 +141,23 @@ type OvImportInput = {
   timeout?: number;
 };
 
+type AddResourceToolInput = {
+  source?: string;
+  to?: string;
+  parent?: string;
+  reason?: string;
+  instruction?: string;
+  wait?: boolean;
+  timeout?: number;
+};
+
+type AddSkillToolInput = {
+  source?: string;
+  data?: unknown;
+  wait?: boolean;
+  timeout?: number;
+};
+
 type MemorySearchInput = {
   query: string;
   uri?: string;
@@ -654,14 +671,33 @@ const contextEnginePlugin = {
       };
     };
 
+    const addResourceOpenViking = (input: AddResourceToolInput, agentId?: string) =>
+      importResource({
+        pathOrUrl: input.source ?? "",
+        to: input.to,
+        parent: input.parent,
+        reason: input.reason,
+        instruction: input.instruction,
+        wait: input.wait,
+        timeout: input.timeout,
+      }, agentId);
+
+    const addSkillOpenViking = (input: AddSkillToolInput, agentId?: string) =>
+      importSkill({
+        path: input.source,
+        data: input.data,
+        wait: input.wait,
+        timeout: input.timeout,
+      }, agentId);
+
     const executeImport = async (input: OvImportInput, agentId?: string) => {
       const kind = input.kind ?? "resource";
       if (kind === "skill") {
         if (input.to || input.parent || input.reason || input.instruction) {
           throw new Error("to, parent, reason, and instruction are resource-only options.");
         }
-        return importSkill({
-          path: input.source,
+        return addSkillOpenViking({
+          source: input.source,
           data: input.data,
           wait: input.wait,
           timeout: input.timeout,
@@ -670,8 +706,8 @@ const contextEnginePlugin = {
       if (input.data !== undefined && input.data !== null) {
         throw new Error("data is only supported for skill imports.");
       }
-      return importResource({
-        pathOrUrl: input.source ?? "",
+      return addResourceOpenViking({
+        source: input.source,
         to: input.to,
         parent: input.parent,
         reason: input.reason,
@@ -812,33 +848,28 @@ const mergeFindResults = (results: FindResult[]): FindResult => {
 
     api.registerTool(
       (ctx: ToolContext) => ({
-        name: "ov_import",
-        label: "Import (OpenViking)",
+        name: "add_resource",
+        label: "Add Resource (OpenViking)",
         description:
-          "Import an OpenViking resource or skill only when the user explicitly asks to import, add, or index one. " +
+          "Add an OpenViking resource only when the user explicitly asks to import, add, upload, save, or index a document, directory, URL, or Git repository. " +
           "When the user asks to save, upload, add, or import an attached document from a '[media attached: /path ...]' message, " +
-          "call this tool with source set to that exact local media path. Do not invent OpenViking upload REST endpoints. " +
-          "Defaults to resource; set kind=skill for SKILL.md, skill directories, raw skill content, or MCP tool dicts.",
+          "call this tool with source set to that exact local media path. Do not invent OpenViking upload REST endpoints.",
         parameters: Type.Object({
-          kind: Type.Optional(Type.Union([Type.Literal("resource"), Type.Literal("skill")], { description: "Import kind. Default: resource" })),
-          source: Type.Optional(Type.String({ description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL" })),
-          data: Type.Optional(Type.Any({ description: "Skill only: raw SKILL.md content or MCP tool dict" })),
-          to: Type.Optional(Type.String({ description: "Resource only: exact target URI, e.g. viking://resources/project-docs" })),
-          parent: Type.Optional(Type.String({ description: "Resource only: parent URI under viking://resources" })),
-          reason: Type.Optional(Type.String({ description: "Resource only: reason or note for adding this resource" })),
-          instruction: Type.Optional(Type.String({ description: "Resource only: processing instruction for semantic extraction" })),
+          source: Type.String({ description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL" }),
+          to: Type.Optional(Type.String({ description: "Exact target URI, e.g. viking://resources/project-docs" })),
+          parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources" })),
+          reason: Type.Optional(Type.String({ description: "Reason or note for adding this resource" })),
+          instruction: Type.Optional(Type.String({ description: "Processing instruction for semantic extraction" })),
           wait: Type.Optional(Type.Boolean({ description: "Wait for processing to complete" })),
           timeout: Type.Optional(Type.Number({ description: "Timeout in seconds when wait is true" })),
         }),
         async execute(_toolCallId: string, params: Record<string, unknown>) {
           if (isBypassedSession(ctx)) {
-            return makeBypassedToolResult("ov_import");
+            return makeBypassedToolResult("add_resource");
           }
           const session = resolvePluginSessionRouting(ctx);
-          return executeImport({
-            kind: params.kind === "skill" ? "skill" : "resource",
+          return addResourceOpenViking({
             source: typeof params.source === "string" ? params.source : undefined,
-            data: params.data,
             to: typeof params.to === "string" ? params.to : undefined,
             parent: typeof params.parent === "string" ? params.parent : undefined,
             reason: typeof params.reason === "string" ? params.reason : undefined,
@@ -848,7 +879,36 @@ const mergeFindResults = (results: FindResult[]): FindResult => {
           }, session.agentId);
         },
       }),
-      { name: "ov_import" },
+      { name: "add_resource" },
+    );
+
+    api.registerTool(
+      (ctx: ToolContext) => ({
+        name: "add_skill",
+        label: "Add Skill (OpenViking)",
+        description:
+          "Add an OpenViking agent skill only when the user explicitly asks to import, add, install, or register a skill. " +
+          "Use source for a SKILL.md file or skill directory, or data for raw SKILL.md content or an MCP tool dict.",
+        parameters: Type.Object({
+          source: Type.Optional(Type.String({ description: "Local SKILL.md path or skill directory path" })),
+          data: Type.Optional(Type.Any({ description: "Raw SKILL.md content or MCP tool dict" })),
+          wait: Type.Optional(Type.Boolean({ description: "Wait for processing to complete" })),
+          timeout: Type.Optional(Type.Number({ description: "Timeout in seconds when wait is true" })),
+        }),
+        async execute(_toolCallId: string, params: Record<string, unknown>) {
+          if (isBypassedSession(ctx)) {
+            return makeBypassedToolResult("add_skill");
+          }
+          const session = resolvePluginSessionRouting(ctx);
+          return addSkillOpenViking({
+            source: typeof params.source === "string" ? params.source : undefined,
+            data: params.data,
+            wait: typeof params.wait === "boolean" ? params.wait : undefined,
+            timeout: typeof params.timeout === "number" ? params.timeout : undefined,
+          }, session.agentId);
+        },
+      }),
+      { name: "add_skill" },
     );
 
     api.registerTool(
@@ -884,7 +944,7 @@ const mergeFindResults = (results: FindResult[]): FindResult => {
       handler: async (ctx: PluginCommandContext) => {
         try {
           if (isBypassedSession(ctx)) {
-            const bypassed = makeBypassedToolResult("ov_import");
+            const bypassed = makeBypassedToolResult("add_resource");
             return { text: bypassed.content[0]!.text, details: bypassed.details };
           }
           const session = resolvePluginSessionRouting(ctx);

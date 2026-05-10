@@ -1,5 +1,7 @@
 # [RFC] OpenClaw Plugin 支持通过 OpenViking 导入/查询 Resource 与 Skill
 
+> 当前实现已调整：Agent 可见工具不再使用统一的 `ov_import(kind=...)`，而是拆为 `add_resource` 和 `add_skill`。`/ov-import` slash command 保留为手动命令兼容入口，仍按 `--kind resource|skill` 分流。
+
 ## 背景
 
 当前 `examples/openclaw-plugin` 已经承担 OpenClaw 与 OpenViking 的 context-engine 集成，包括 session context、memory recall/store/forget、archive expand，以及 local/remote OpenViking runtime 管理。

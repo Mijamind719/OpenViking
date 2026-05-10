@@ -338,23 +338,38 @@ describe("Tool: ov_archive_expand (behavioral)", () => {
   });
 });
 
-describe("Tool: ov_import and memory_search (registration)", () => {
-  it("registers unified import tool with expected parameters", () => {
+describe("Tool: add_resource, add_skill, and memory_search (registration)", () => {
+  it("registers add_resource tool with expected parameters", () => {
     const { tools, api } = setupPlugin();
     contextEnginePlugin.register(api as any);
-    const tool = tools.get("ov_import");
+    const tool = tools.get("add_resource");
     expect(tool).toBeDefined();
     expect(tool!.description).toContain("explicitly asks");
     expect(tool!.description).toContain("[media attached: /path");
     expect(tool!.description).toContain("Do not invent OpenViking upload REST endpoints");
     const props = (tool!.parameters as any).properties;
-    expect(props).toHaveProperty("kind");
     expect(props).toHaveProperty("source");
     expect(props.source.description).toContain("OpenClaw media attachment path");
-    expect(props).toHaveProperty("data");
     expect(props).toHaveProperty("to");
     expect(props).toHaveProperty("parent");
+    expect(props).toHaveProperty("reason");
+    expect(props).toHaveProperty("instruction");
     expect(props).toHaveProperty("wait");
+  });
+
+  it("registers add_skill tool with expected parameters", () => {
+    const { tools, api } = setupPlugin();
+    contextEnginePlugin.register(api as any);
+    const tool = tools.get("add_skill");
+    expect(tool).toBeDefined();
+    expect(tool!.description).toContain("agent skill");
+    const props = (tool!.parameters as any).properties;
+    expect(props).toHaveProperty("source");
+    expect(props).toHaveProperty("data");
+    expect(props).toHaveProperty("wait");
+    expect(props).toHaveProperty("timeout");
+    expect(props).not.toHaveProperty("to");
+    expect(props).not.toHaveProperty("parent");
   });
 
   it("registers memory_search tool with natural-language trigger guidance", () => {
@@ -617,10 +632,10 @@ describe("OpenViking memory_search command parsing", () => {
 });
 
 describe("Plugin registration", () => {
-  it("registers all 7 tools", () => {
+  it("registers all 8 tools", () => {
     const { api } = setupPlugin();
     contextEnginePlugin.register(api as any);
-    expect(api.registerTool).toHaveBeenCalledTimes(7);
+    expect(api.registerTool).toHaveBeenCalledTimes(8);
   });
 
   it("registers import and search commands", () => {
@@ -708,7 +723,7 @@ describe("Plugin registration", () => {
     expect(headers.get("X-OpenViking-Agent")).toBe("worker");
   });
 
-  it("import tool propagates configured tenant headers for resource imports", async () => {
+  it("add_resource propagates configured tenant headers", async () => {
     const fetchMock = vi.fn(async () =>
       okResponse({ root_uri: "viking://resources/shared-docs", status: "success" }),
     );
@@ -722,9 +737,8 @@ describe("Plugin registration", () => {
     };
     contextEnginePlugin.register(api as any);
 
-    const tool = tools.get("ov_import")!;
-    await tool.execute("tc-import", {
-      kind: "resource",
+    const tool = tools.get("add_resource")!;
+    await tool.execute("tc-add-resource", {
       source: "https://example.com/docs",
       to: "viking://resources/shared-docs",
       wait: true,
@@ -736,7 +750,7 @@ describe("Plugin registration", () => {
     expect(headers.get("X-OpenViking-User")).toBe("alice");
   });
 
-  it("import tool uploads local media attachment paths as resources", async () => {
+  it("add_resource uploads local media attachment paths as resources", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "openclaw-media-"));
     const filePath = join(tempDir, "大秦-TOP20.xlsx");
     await writeFile(filePath, "spreadsheet bytes");
@@ -751,9 +765,8 @@ describe("Plugin registration", () => {
       const { tools, api } = setupPlugin();
       contextEnginePlugin.register(api as any);
 
-      const tool = tools.get("ov_import")!;
-      const result = await tool.execute("tc-import-local-media", {
-        kind: "resource",
+      const tool = tools.get("add_resource")!;
+      const result = await tool.execute("tc-add-resource-local-media", {
         source: filePath,
         wait: true,
       }) as ToolResult;
@@ -769,6 +782,33 @@ describe("Plugin registration", () => {
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it("add_skill posts skill imports to the skills API", async () => {
+    const fetchMock = vi.fn(async () =>
+      okResponse({ uri: "viking://agent/skills/demo", name: "demo" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { tools, api } = setupPlugin();
+    contextEnginePlugin.register(api as any);
+
+    const tool = tools.get("add_skill")!;
+    const result = await tool.execute("tc-add-skill", {
+      data: "name: demo\n",
+      wait: true,
+      timeout: 30,
+    }) as ToolResult;
+
+    expect(result.content[0]!.text).toContain("Imported OpenViking skill");
+    const [url, init] = fetchMock.mock.calls.find((call) => String(call[0]).endsWith("/api/v1/skills")) as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:1933/api/v1/skills");
+    const body = JSON.parse(String(init.body));
+    expect(body).toMatchObject({
+      data: "name: demo\n",
+      wait: true,
+      timeout: 30,
+    });
   });
 
   it("slash commands honor bypassSessionPatterns", async () => {

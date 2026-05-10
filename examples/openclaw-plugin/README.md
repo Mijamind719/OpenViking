@@ -152,13 +152,14 @@ So `afterTurn()` is closer to "incremental append plus threshold-triggered async
 
 ## Tools and Expandability
 
-Beyond automatic behavior, the plugin exposes six tools directly:
+Beyond automatic behavior, the plugin exposes seven tools directly:
 
 - `memory_recall`: explicit long-term memory search
 - `memory_store`: write text into an OpenViking session and trigger commit
 - `memory_forget`: delete by URI, or search first and remove a single strong match
 - `ov_archive_expand`: expand a concrete archive back into raw messages
-- `ov_import`: import a resource or skill; defaults to resource and uses `kind: "skill"` for skills
+- `add_resource`: import a document, directory, URL, or Git repository as an OpenViking resource
+- `add_skill`: import or register an OpenViking agent skill
 - `memory_search`: search OpenViking resources and skills, especially after importing them
 
 They serve different roles:
@@ -167,7 +168,8 @@ They serve different roles:
 - `memory_recall` gives the model an explicit follow-up search path
 - `memory_store` is for immediately persisting clearly important information
 - `ov_archive_expand` is the "go back to archive detail" escape hatch when summaries are not enough
-- `ov_import` lets the agent complete explicit import requests without asking the user to remember slash commands
+- `add_resource` lets the agent save explicit document or repository import requests without asking the user to remember slash commands
+- `add_skill` keeps skill installation separate from resource indexing
 - `memory_search` closes the loop after import by letting the user or agent confirm and consume resources and skills
 
 `ov_archive_expand` is especially important because `assemble()` normally returns archive summaries and indexes, not the full raw transcript.
